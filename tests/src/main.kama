@@ -1,0 +1,606 @@
+// @kama/rmlui's tests: one program, run from the package root by tools/test.sh (debug and release). Headless — RmlUi
+// draws nothing, so a document is laid out, recorded and driven with no window and no GPU. A failing case prints its
+// name; the last line counts them.
+//
+// The font is RmlUi's own sample face (third_party/rmlui/Samples/assets/LatoLatin-Regular.ttf, SIL OFL 1.1), which the
+// fetch brings; nothing font-shaped is committed here.
+
+import {
+    core::println,
+    std::collections::ConstView,
+    std::collections::DynamicArray,
+    rmlui::RmlUi,
+    rmlui::RmlUiError,
+    rmlui::Context,
+    rmlui::Document,
+    rmlui::Element,
+    rmlui::Binding,
+    rmlui::Listener,
+    rmlui::Event,
+    rmlui::EventType,
+    rmlui::Command,
+    rmlui::CommandKind,
+    rmlui::Texture,
+    rmlui::Vertex,
+    rmlui::Rect,
+    rmlui::BoxArea,
+    rmlui::Modal,
+    rmlui::Focus,
+    rmlui::LogEntry,
+    rmlui::encodeRml,
+    rmlui::LISTEN_BUBBLE,
+    rmlui::LISTEN_STOP,
+    rmlui::KEY_TAB,
+    rmlui::KEY_RETURN,
+    rmlui::KEY_BACKSPACE,
+    rmlui::KEY_DOWN,
+    rmlui::KEY_HOME,
+    rmlui::KEY_DELETE,
+    rmlui::MOD_NONE,
+};
+
+type value Tally {
+    public int32 run;
+    public int32 failed;
+
+    public ctor zero()
+    {
+        this.run = 0;
+        this.failed = 0;
+    }
+}
+
+fn void check(ref Tally t, bool ok, const ref string what)
+{
+    t.run = t.run + 1;
+    if (!ok) {
+        t.failed = t.failed + 1;
+        println(s: "  FAIL ${what}");
+    }
+}
+
+fn string font() { return "third_party/rmlui/Samples/assets/LatoLatin-Regular.ttf"; }
+
+// A small screen: a title, a panel holding two buttons, a text field, a list a rewrite replaces, a transformed badge,
+// and a picture the test provides.
+fn string screen()
+{
+    return "<rml><head><title>Test screen</title><style>
+        body { font-family: LatoLatin; font-size: 20dp; color: #ffffff; width: 100%; height: 100%; }
+        div, p, h1, button { display: block; }
+        h1 { font-size: 32dp; }
+        #panel { padding: 10dp; background-color: #202838ff; }
+        button { width: 200dp; height: 40dp; margin-top: 4dp; background-color: #304060ff; tab-index: auto; nav: auto; focus: auto; }
+        button:focus { background-color: #5070a0ff; }
+        input { display: block; width: 300dp; height: 30dp; tab-index: auto; nav: auto; }
+        #badge { width: 60dp; height: 20dp; background-color: #ff8000ff; transform: rotate(10deg); }
+        img { display: block; }
+        #rounded { width: 80dp; height: 30dp; overflow: hidden; border-radius: 10dp; background-color: #00ff00ff; }
+        input.range { width: 200dp; height: 16dp; }
+        input.range slidertrack { background-color: #404040ff; }
+        input.range sliderbar { width: 12dp; background-color: #ffffffff; }
+    </style></head><body>
+        <h1 id='title'>Hello</h1>
+        <div id='panel'>
+            <button id='go'>Go</button>
+            <button id='stop'>Stop</button>
+        </div>
+        <input id='name' type='text' value=''/>
+        <div id='list'><p>one</p></div>
+        <div id='badge'>badge</div>
+        <div id='rounded'><p>clipped by a rounded box, and long enough to overflow it</p></div>
+        <img id='pic' src='/img/dot'/>
+        <input id='level' type='range' min='0' max='1' step='0.1' value='0.5'/>
+    </body></rml>";
+}
+
+fn void drain(ref Context ctx)
+{
+    bool more = true;
+    while (more) {
+        Optional<Event> e = ctx.pollEvent();
+        match (e) {
+            case None: { more = false; }
+            case Some(value: ev): { }
+        };
+    }
+}
+
+// The events in the queue now, as (type, element, target) handles, and how many.
+type value Seen {
+    public int32 count;
+    public int32 clicks;
+    public int32 changes;
+    public int32 firstElement;
+    public int32 firstTarget;
+    public int32 secondElement;
+    public int32 secondTarget;
+    public int32 firstBinding;
+
+    public ctor none()
+    {
+        this.count = 0;
+        this.clicks = 0;
+        this.changes = 0;
+        this.firstElement = 0;
+        this.firstTarget = 0;
+        this.secondElement = 0;
+        this.secondTarget = 0;
+        this.firstBinding = 0;
+    }
+}
+
+fn Seen collect(ref Context ctx)
+{
+    Seen s = Seen.none();
+    bool more = true;
+    while (more) {
+        Optional<Event> e = ctx.pollEvent();
+        match (e) {
+            case None: { more = false; }
+            case Some(value: ev): {
+                s.count = s.count + 1;
+                bool isClick = match (ev.type) { case Click: true; case _: false; };
+                bool isChange = match (ev.type) { case Change: true; case _: false; };
+                if (isClick) { s.clicks = s.clicks + 1; }
+                if (isChange) { s.changes = s.changes + 1; }
+                if (s.count == 1) {
+                    s.firstElement = ev.element.handle();
+                    s.firstTarget = ev.target.handle();
+                    s.firstBinding = ev.binding.handle();
+                }
+                if (s.count == 2) {
+                    s.secondElement = ev.element.handle();
+                    s.secondTarget = ev.target.handle();
+                }
+            }
+        };
+    }
+    return s;
+}
+
+fn Element must(Optional<Element> e, const ref string what)
+{
+    return match (e) {
+        case Some(value: x): x;
+        case None: { panic(msg: "rmlui tests: no element ${what}"); return Element.fromHandle(handle: 0); }
+    };
+}
+
+// Does the binding still name a live element?
+fn bool must2(Binding b)
+{
+    Optional<Element> e = b.element();
+    return match (e) { case Some(value: x): x.isLive(); case None: false; };
+}
+
+fn void press(ref Context ctx, int32 key)
+{
+    ctx.key(key: key, down: true, mods: MOD_NONE);
+    ctx.key(key: key, down: false, mods: MOD_NONE);
+    ctx.update();
+}
+
+fn void clickAt(ref Context ctx, Rect r)
+{
+    ctx.mouseMove(x: r.centerX(), y: r.centerY(), mods: MOD_NONE);
+    ctx.mouseButton(button: 0, down: true, mods: MOD_NONE);
+    ctx.mouseButton(button: 0, down: false, mods: MOD_NONE);
+    ctx.update();
+}
+
+fn int32 errorsLogged(ref RmlUi ui)
+{
+    int32 n = 0;
+    bool more = true;
+    while (more) {
+        Optional<LogEntry> l = ui.pollLog();
+        match (give l) {
+            case None: { more = false; }
+            case Some(value: e): { if (e.isError()) { n = n + 1; } }
+        };
+    }
+    return n;
+}
+
+fn int32 main()
+{
+    Tally t = Tally.zero();
+
+    Result<RmlUi, RmlUiError> started = RmlUi.start();
+    RmlUi ui = match (started) {
+        case Ok(value: u): u;
+        case Err(error: e): { println(s: "rmlui tests: RmlUi would not start"); return 1; }
+    };
+    string version = ui.version();
+    check(t: t, ok: version.startsWith(prefix: "6.3"), what: "RmlUi reports version 6.3 (got '${version}')");
+
+    // ---- fonts and the log ----
+    string face = font();
+    check(t: t, ok: ui.loadFontFace(path: face, fallback: false), what: "the sample font loads");
+    ui.setLogEcho(on: false);
+    string missing = "tests/fixtures/no-such-font.ttf";
+    check(t: t, ok: !ui.loadFontFace(path: missing, fallback: false), what: "a missing font is refused");
+    bool sawWarning = false;
+    bool moreLog = true;
+    while (moreLog) {
+        Optional<LogEntry> l = ui.pollLog();
+        match (give l) {
+            case None: { moreLog = false; }
+            case Some(value: e): { string txt = e.text(); if (txt.contains(substring: "no-such-font")) { sawWarning = true; } }
+        };
+    }
+    check(t: t, ok: sawWarning, what: "...and the refusal is in RmlUi's log queue");
+    ui.setLogEcho(on: true);
+
+    // ---- a provided image, BEFORE the document that shows it ----
+    InlineArray<uint8>#(16) pixels = [255ui8, 0ui8, 0ui8, 255ui8, 0ui8, 255ui8, 0ui8, 255ui8,
+                                      0ui8, 0ui8, 255ui8, 255ui8, 255ui8, 255ui8, 255ui8, 255ui8];
+    string imgName = "img/dot";
+    ui.provideImage(name: imgName, rgba: pixels.view(), width: 2, height: 2);
+
+    // ---- contexts ----
+    Result<Context, RmlUiError> made = Context.create(ui: ui, name: "main", width: 800, height: 600);
+    Context ctx = match (made) {
+        case Ok(value: c): c;
+        case Err(error: e): { println(s: "rmlui tests: no context"); return 1; }
+    };
+    check(t: t, ok: ctx.isLive(), what: "a context is created");
+    ui.setLogEcho(on: false);
+    Result<Context, RmlUiError> twin = Context.create(ui: ui, name: "main", width: 10, height: 10);
+    ui.setLogEcho(on: true);
+    bool refused = match (twin) { case Ok(value: c): false; case Err(error: e): true; };
+    check(t: t, ok: refused, what: "a second context with a taken name is refused");
+    ctx.setDpRatio(ratio: 1.0);
+
+    // ---- a document from text ----
+    string rml = screen();
+    string url = "tests/fixtures/screen.rml";
+    Optional<Document> loaded = ctx.loadDocumentRml(rml: rml, sourceUrl: url);
+    bool haveDoc = match (loaded) { case Some(value: d): true; case None: false; };
+    check(t: t, ok: haveDoc, what: "a document loads from RML text");
+    if (!haveDoc) { println(s: "rmlui tests: ${t.failed} of ${t.run} failed"); return 1; }
+    Document doc = match (loaded) { case Some(value: d): d; case None: Document.fromHandle(handle: 0); };
+    doc.show(modal: Modal::None, focus: Focus::Auto);
+    string title = doc.title();
+    check(t: t, ok: title == "Test screen", what: "the document's title reads back ('${title}')");
+    ctx.update();
+    ctx.render();
+    check(t: t, ok: errorsLogged(ui: ui) == 0, what: "the document parses with no error logged");
+
+    // ---- the recorded commands ----
+    int32 count = ctx.commandCount();
+    check(t: t, ok: count > 5, what: "render records draw commands (${count})");
+    int32 textured = 0;
+    int32 transformed = 0;
+    int32 clips = 0;
+    int32 verts = 0;
+    bool indicesInRange = true;
+    int32 i = 0;
+    while (i < count) {
+        Command c = ctx.command(index: i);
+        bool draw = match (c.kind) { case Draw: true; case _: false; };
+        bool clip = match (c.kind) { case ClipSet: true; case ClipIntersect: true; case ClipSetInverse: true; case _: false; };
+        if (clip) { clips = clips + 1; }
+        if (draw) {
+            verts = verts + c.vertexCount;
+            if (c.texture != 0) { textured = textured + 1; }
+            if (c.transformed) { transformed = transformed + 1; }
+            int32 k = 0;
+            while (k < c.indexCount) {
+                int32 ix = c.index(i: k);
+                if (ix < 0 || ix >= c.vertexCount) { indicesInRange = false; }
+                k = k + 1;
+            }
+        }
+        i = i + 1;
+    }
+    check(t: t, ok: verts > 0, what: "the commands carry geometry (${verts} vertices)");
+    check(t: t, ok: indicesInRange, what: "every index points inside its own command's vertices");
+    check(t: t, ok: textured > 0, what: "text is drawn from a texture (${textured} textured draws)");
+    check(t: t, ok: transformed > 0, what: "the rotated badge records a transform (${transformed} transformed draws)");
+    check(t: t, ok: clips > 0, what: "overflow hidden in a rounded box records a clip mask (${clips} clip commands)");
+    Command first = ctx.command(index: 0);
+    Vertex v0 = first.vertex(i: 0);
+    check(t: t, ok: v0.a >= 0.0 && v0.a <= 1.0, what: "a vertex reads back with colour in 0..1");
+    Command outside = ctx.command(index: count + 5);
+    check(t: t, ok: outside.vertexCount == 0 && outside.texture == 0, what: "an out-of-range command is empty, not a crash");
+
+    int32 textures = ui.textureCount();
+    check(t: t, ok: textures >= 2, what: "a glyph atlas and the provided image are textures (${textures})");
+    bool atlasInked = false;
+    int32 h = 1;
+    while (h <= textures) {
+        Texture tex = ui.texture(handle: h);
+        if (!tex.isEmpty() && tex.generation >= 1 && !(tex.width == 2 && tex.height == 2)) {
+            isize n = cast<isize>(tex.width) * cast<isize>(tex.height) * 4;
+            isize b = 3;
+            while (b < n) {
+                if (tex.byteAt(i: b) != 0ui8) { atlasInked = true; }
+                b = b + 4;
+            }
+        }
+        h = h + 1;
+    }
+    check(t: t, ok: atlasInked, what: "the glyph atlas has inked pixels");
+
+    // The provided image is drawn at its own size from its own texture.
+    Element pic = must(e: doc.byId(id: "pic"), what: "pic");
+    Rect pr = pic.rect(area: BoxArea::Content);
+    check(t: t, ok: pr.width == 2.0 && pr.height == 2.0, what: "the provided image lays out at 2x2 (${pr.width} x ${pr.height})");
+
+    // ---- elements ----
+    Element go = must(e: doc.byId(id: "go"), what: "go");
+    Element stop = must(e: doc.byId(id: "stop"), what: "stop");
+    Element panel = must(e: doc.byId(id: "panel"), what: "panel");
+    Element again = must(e: doc.byId(id: "go"), what: "go again");
+    check(t: t, ok: go.same(other: again), what: "the same element answers the same handle");
+    string tag = go.tag();
+    string gid = go.id();
+    check(t: t, ok: tag == "button" && gid == "go", what: "tag and id read back ('${tag}', '${gid}')");
+    Optional<Element> nope = doc.byId(id: "nope");
+    bool isNone = match (nope) { case None: true; case Some(value: x): false; };
+    check(t: t, ok: isNone, what: "an unknown id is None");
+    Element viaQuery = must(e: doc.query(selector: "#panel button"), what: "query");
+    check(t: t, ok: viaQuery.same(other: go), what: "a selector query finds the first button");
+    int32 panelKids = panel.childCount();
+    check(t: t, ok: panelKids == 2, what: "the panel has two children (${panelKids})");
+    Element parentOfGo = must(e: go.parent(), what: "go's parent");
+    check(t: t, ok: parentOfGo.same(other: panel), what: "go's parent is the panel");
+    Rect gr = go.rect(area: BoxArea::Border);
+    check(t: t, ok: gr.width == 200.0 && gr.height == 40.0, what: "go's border box is 200x40 (${gr.width} x ${gr.height})");
+
+    // ---- an injected click arrives as an event, and bubbles ----
+    drain(ctx: ctx);
+    Optional<Listener> onGo = go.listen(event: "click", flags: LISTEN_BUBBLE);
+    Optional<Listener> onPanel = panel.listen(event: "click", flags: LISTEN_BUBBLE);
+    bool listening = match (onGo) { case Some(value: l): true; case None: false; };
+    check(t: t, ok: listening, what: "a click listener attaches");
+    bool consumed = ctx.mouseMove(x: gr.centerX(), y: gr.centerY(), mods: MOD_NONE);
+    check(t: t, ok: consumed, what: "the pointer over a button is the UI's");
+    clickAt(ctx: ctx, r: gr);
+    Seen s1 = collect(ctx: ctx);
+    check(t: t, ok: s1.clicks == 2, what: "one click is two events: the button's and the panel's (${s1.clicks})");
+    check(t: t, ok: s1.firstElement == go.handle() && s1.firstTarget == go.handle(), what: "...the first heard on go, targeted at go");
+    check(t: t, ok: s1.secondElement == panel.handle() && s1.secondTarget == go.handle(),
+          what: "...the second heard on the panel, still targeted at go");
+    Rect sr = stop.rect(area: BoxArea::Border);
+    clickAt(ctx: ctx, r: sr);
+    Seen s2 = collect(ctx: ctx);
+    check(t: t, ok: s2.clicks == 1 && s2.firstElement == panel.handle() && s2.firstTarget == stop.handle(),
+          what: "a click on stop reaches only the panel's listener, targeted at stop");
+    match (onPanel) { case Some(value: l): { l.remove(); } case None: { } };
+    clickAt(ctx: ctx, r: gr);
+    Seen s3 = collect(ctx: ctx);
+    check(t: t, ok: s3.clicks == 1, what: "a removed listener hears nothing (${s3.clicks} click left)");
+    Optional<Listener> stopper = stop.listen(event: "click", flags: LISTEN_STOP);
+    Optional<Listener> onPanel2 = panel.listen(event: "click", flags: LISTEN_BUBBLE);
+    clickAt(ctx: ctx, r: sr);
+    Seen s4 = collect(ctx: ctx);
+    check(t: t, ok: s4.clicks == 1 && s4.firstElement == stop.handle(), what: "LISTEN_STOP keeps the click from the panel");
+    go.click();
+    Seen s5 = collect(ctx: ctx);
+    check(t: t, ok: s5.clicks >= 1 && s5.firstElement == go.handle(), what: "Element.click raises a real click");
+
+    // ---- keyboard navigation and RETURN ----
+    Element name = must(e: doc.byId(id: "name"), what: "name");
+    Optional<Element> firstTab = doc.nextTab(from: doc.root(), forward: true, wrap: true);
+    Element ft = must(e: firstTab, what: "first tab element");
+    check(t: t, ok: ft.same(other: go), what: "the first tab element is go");
+    check(t: t, ok: go.focus(visible: true), what: "go takes focus");
+    Element focusedNow = must(e: doc.focused(), what: "focused");
+    check(t: t, ok: focusedNow.same(other: go), what: "the document reports go focused");
+    press(ctx: ctx, key: KEY_TAB);
+    Element afterTab = must(e: doc.focused(), what: "after tab");
+    check(t: t, ok: afterTab.same(other: stop), what: "TAB moves the focus to stop");
+    press(ctx: ctx, key: KEY_DOWN);
+    Element afterDown = must(e: doc.focused(), what: "after down");
+    check(t: t, ok: afterDown.same(other: name), what: "DOWN (nav: auto) moves it to the text field");
+    stop.focus(visible: true);
+    drain(ctx: ctx);
+    press(ctx: ctx, key: KEY_RETURN);
+    Seen s6 = collect(ctx: ctx);
+    check(t: t, ok: s6.clicks >= 1 && s6.firstTarget == stop.handle(), what: "RETURN on a focused button is a click on it");
+
+    // ---- a text field: typed, edited, set quietly ----
+    Optional<Listener> onName = name.listen(event: "change", flags: LISTEN_BUBBLE);
+    Optional<Listener> keys = name.listen(event: "keydown", flags: LISTEN_BUBBLE);
+    check(t: t, ok: name.focus(visible: true), what: "the text field takes focus");
+    drain(ctx: ctx);
+    string typed = "10.0.0.7:270159";
+    ctx.textUtf8(text: typed);
+    ctx.update();
+    Seen typedEvents = collect(ctx: ctx);
+    check(t: t, ok: typedEvents.changes >= 1, what: "typing raises change events (${typedEvents.changes})");
+    ctx.key(key: KEY_BACKSPACE, down: true, mods: MOD_NONE);
+    bool sawBackspace = false;
+    bool moreKeys = true;
+    while (moreKeys) {
+        Optional<Event> e = ctx.pollEvent();
+        match (e) {
+            case None: { moreKeys = false; }
+            case Some(value: ev): {
+                bool kd = match (ev.type) { case Keydown: true; case _: false; };
+                if (kd && ui.eventInt(name: "key_identifier", fallback: -1) == KEY_BACKSPACE) { sawBackspace = true; }
+            }
+        };
+    }
+    ctx.key(key: KEY_BACKSPACE, down: false, mods: MOD_NONE);
+    ctx.update();
+    check(t: t, ok: sawBackspace, what: "a keydown event carries its key_identifier parameter");
+    Optional<string> v1 = name.value();
+    string val1 = match (v1) { case Some(value: x): copy x; case None: "<none>"; };
+    check(t: t, ok: val1 == "10.0.0.7:27015", what: "typed, and Backspace takes one back ('${val1}')");
+    press(ctx: ctx, key: KEY_HOME);
+    press(ctx: ctx, key: KEY_DELETE);
+    Optional<string> v2 = name.value();
+    string val2 = match (v2) { case Some(value: x): copy x; case None: "<none>"; };
+    check(t: t, ok: val2 == "0.0.0.7:27015", what: "Home then Delete edits at the caret ('${val2}')");
+    drain(ctx: ctx);
+    check(t: t, ok: name.setValue(value: "192.168.1.20", quiet: true), what: "a form control takes a value");
+    Seen quiet = collect(ctx: ctx);
+    check(t: t, ok: quiet.changes == 0, what: "...and a quiet set raises no change event");
+    // RmlUi raises `change` for a script's write to a RANGE (a text field's set is silent unless sanitised) — the case
+    // `quiet` exists for.
+    Element level = must(e: doc.byId(id: "level"), what: "level");
+    Optional<Listener> onLevel = level.listen(event: "change", flags: LISTEN_BUBBLE);
+    level.setValue(value: "0.8", quiet: true);
+    Seen quietRange = collect(ctx: ctx);
+    check(t: t, ok: quietRange.changes == 0, what: "a quiet set of a range raises nothing");
+    level.setValue(value: "0.3", quiet: false);
+    Seen loud = collect(ctx: ctx);
+    check(t: t, ok: loud.changes >= 1, what: "a set of a range that is not quiet raises RmlUi's change event");
+    Optional<string> lv = level.value();
+    string levelVal = match (lv) { case Some(value: x): copy x; case None: "<none>"; };
+    check(t: t, ok: levelVal.startsWith(prefix: "0.3"), what: "the range reads back its value ('${levelVal}')");
+    Optional<string> notControl = go.value();
+    bool noValue = match (notControl) { case None: true; case Some(value: x): false; };
+    check(t: t, ok: noValue, what: "a button is not a form control: no value");
+
+    // ---- text, markup, attributes, classes, properties ----
+    Element titleEl = must(e: doc.byId(id: "title"), what: "title");
+    string before = titleEl.text();
+    check(t: t, ok: before == "Hello", what: "an element's text reads back ('${before}')");
+    string hostile = "<b>Sam</b> & \"friends\"";
+    titleEl.setText(text: hostile);
+    string after = titleEl.text();
+    check(t: t, ok: after == hostile, what: "setText round-trips text RmlUi would parse ('${after}')");
+    string inner = titleEl.innerRml();
+    check(t: t, ok: inner.contains(substring: "&lt;b&gt;"), what: "...because it went in escaped ('${inner}')");
+    string enc = encodeRml(text: hostile);
+    check(t: t, ok: enc == "&lt;b&gt;Sam&lt;/b&gt; &amp; &quot;friends&quot;", what: "encodeRml is RmlUi's escaping ('${enc}')");
+
+    Element list = must(e: doc.byId(id: "list"), what: "list");
+    Element oldRow = must(e: list.child(index: 0), what: "old row");
+    check(t: t, ok: oldRow.isLive(), what: "a child handle is live before a rewrite");
+    list.setInnerRml(rml: "<p id='r1'>a</p><p id='r2'>b</p><p id='r3'>c</p>");
+    int32 listKids = list.childCount();
+    check(t: t, ok: listKids == 3, what: "setInnerRml builds the new children (${listKids})");
+    check(t: t, ok: !oldRow.isLive(), what: "...and the old child's handle is DEAD, not dangling");
+    Rect deadRect = oldRow.rect(area: BoxArea::Border);
+    string deadText = oldRow.text();
+    check(t: t, ok: deadRect.width == 0.0 && deadText == "", what: "...so reading it answers nothing rather than freed memory");
+    Element r2 = must(e: doc.byId(id: "r2"), what: "r2");
+    string r2text = r2.text();
+    check(t: t, ok: r2text == "b", what: "a new child is found by id after the write");
+
+    go.setAttribute(name: "data-kind", value: "primary");
+    Optional<string> attr = go.attribute(name: "data-kind");
+    string attrVal = match (attr) { case Some(value: x): copy x; case None: "<none>"; };
+    check(t: t, ok: attrVal == "primary", what: "an attribute reads back ('${attrVal}')");
+    go.removeAttribute(name: "data-kind");
+    Optional<string> gone = go.attribute(name: "data-kind");
+    bool goneNone = match (gone) { case None: true; case Some(value: x): false; };
+    check(t: t, ok: goneNone, what: "a removed attribute is None");
+    go.setClass(name: "hot", on: true);
+    check(t: t, ok: go.hasClass(name: "hot"), what: "a class switches on");
+    go.setClass(name: "hot", on: false);
+    check(t: t, ok: !go.hasClass(name: "hot"), what: "...and off");
+    Element badge = must(e: doc.byId(id: "badge"), what: "badge");
+    check(t: t, ok: badge.setProperty(name: "width", value: "120dp"), what: "an inline property is accepted");
+    ctx.update();
+    Rect br = badge.rect(area: BoxArea::Border);
+    check(t: t, ok: br.width == 120.0, what: "...and lays out (${br.width} wide)");
+    Optional<string> prop = badge.property(name: "width");
+    string propVal = match (prop) { case Some(value: x): copy x; case None: "<none>"; };
+    check(t: t, ok: propVal.contains(substring: "120"), what: "a property reads back ('${propVal}')");
+    ui.setLogEcho(on: false);
+    check(t: t, ok: !badge.setProperty(name: "no-such-property", value: "1"), what: "an unknown property is refused");
+    ui.setLogEcho(on: true);
+
+    // ---- bindings: an id held across rewrites ----
+    Optional<Binding> ob = doc.bind(id: "r2");
+    Binding b2 = match (ob) { case Some(value: b): b; case None: Binding.fromHandle(handle: 0); };
+    Optional<Binding> ob2 = doc.bind(id: "r2");
+    Binding b2again = match (ob2) { case Some(value: b): b; case None: Binding.fromHandle(handle: 0); };
+    check(t: t, ok: !b2.isNone() && b2.same(other: b2again), what: "binding an id twice gives one handle");
+    Optional<Binding> missingBind = doc.bind(id: "no-such-id");
+    bool bindNone = match (missingBind) { case None: true; case Some(value: b): false; };
+    check(t: t, ok: bindNone, what: "binding an id no element has is None");
+    check(t: t, ok: b2.listen(event: "click", flags: LISTEN_BUBBLE), what: "a binding listens");
+    b2.listen(event: "click", flags: LISTEN_BUBBLE);
+    drain(ctx: ctx);
+    Element r2before = must(e: b2.element(), what: "r2 via binding");
+    r2before.click();
+    Seen viaBinding = collect(ctx: ctx);
+    check(t: t, ok: viaBinding.clicks == 1 && viaBinding.firstBinding == b2.handle(),
+          what: "a click on the bound element reports the binding, once (${viaBinding.clicks})");
+    list.setInnerRml(rml: "<p id='r1'>x</p><p id='r2'>y</p>");
+    check(t: t, ok: !r2before.isLive(), what: "the rewrite killed the old r2 element");
+    Optional<Binding> rebound = doc.bind(id: "r2");
+    Binding b2after = match (rebound) { case Some(value: b): b; case None: Binding.fromHandle(handle: 0); };
+    check(t: t, ok: b2after.same(other: b2), what: "re-binding after the rewrite keeps the handle");
+    Element r2after = must(e: b2.element(), what: "new r2 via binding");
+    string r2now = r2after.text();
+    check(t: t, ok: r2after.isLive() && !r2after.same(other: r2before) && r2now == "y",
+          what: "...and the binding now names the new element ('${r2now}')");
+    r2after.click();
+    Seen followed = collect(ctx: ctx);
+    check(t: t, ok: followed.clicks == 1 && followed.firstBinding == b2.handle(),
+          what: "...and its listener followed it to the new element");
+    string bid = b2.id();
+    check(t: t, ok: bid == "r2", what: "a binding reads back its id ('${bid}')");
+    Optional<Binding> gob = doc.bind(id: "go");
+    Binding goBinding = match (gob) { case Some(value: b): b; case None: Binding.fromHandle(handle: 0); };
+    go.focus(visible: true);
+    Element focusedGo = must(e: doc.focused(), what: "focused go");
+    Optional<Binding> whose = doc.bindingOf(element: focusedGo);
+    Binding whoseB = match (whose) { case Some(value: b): b; case None: Binding.fromHandle(handle: 0); };
+    check(t: t, ok: whoseB.same(other: goBinding), what: "the focused element maps back to its binding");
+
+    // ---- a second context is independent ----
+    Result<Context, RmlUiError> madeSide = Context.create(ui: ui, name: "side", width: 320, height: 200);
+    Context side = match (madeSide) {
+        case Ok(value: c): c;
+        case Err(error: e): { println(s: "rmlui tests: no second context"); return 1; }
+    };
+    string path = "tests/fixtures/sample.rml";
+    Optional<Document> fromFile = side.loadDocument(path: path);
+    bool haveFile = match (fromFile) { case Some(value: d): true; case None: false; };
+    check(t: t, ok: haveFile, what: "a document loads from a file");
+    Document fileDoc = match (fromFile) { case Some(value: d): d; case None: Document.fromHandle(handle: 0); };
+    fileDoc.show(modal: Modal::None, focus: Focus::None);
+    string fileTitle = fileDoc.title();
+    check(t: t, ok: fileTitle == "From a file", what: "...with its title ('${fileTitle}')");
+    side.update();
+    side.render();
+    ctx.render();
+    int32 sideCount = side.commandCount();
+    int32 mainCount = ctx.commandCount();
+    check(t: t, ok: sideCount > 0 && mainCount > sideCount, what: "two contexts record separately (${sideCount} and ${mainCount})");
+    Optional<Element> crossed = doc.byId(id: "hello");
+    bool notCrossed = match (crossed) { case None: true; case Some(value: x): false; };
+    check(t: t, ok: notCrossed, what: "one document cannot see another's elements");
+
+    // ---- closing a document kills its handles and its listeners ----
+    doc.close();
+    ctx.update();
+    check(t: t, ok: !doc.isLive() && !go.isLive(), what: "a closed document and its elements are dead after the update");
+    go.click();
+    go.setInnerRml(rml: "<p>ignored</p>");
+    Seen afterClose = collect(ctx: ctx);
+    check(t: t, ok: afterClose.count == 0, what: "...and calls on their handles do nothing");
+    ctx.render();
+    check(t: t, ok: ctx.commandCount() == 0, what: "...and the context renders nothing");
+
+    // ---- explicit lifetimes ----
+    Element hello = must(e: fileDoc.byId(id: "hello"), what: "hello");
+    side.destroy();
+    check(t: t, ok: !side.isLive() && !fileDoc.isLive() && !hello.isLive(), what: "a destroyed context takes its documents with it");
+    side.update();
+    side.render();
+    check(t: t, ok: side.commandCount() == 0, what: "...and calls on it do nothing");
+    ui.shutdown();
+    check(t: t, ok: !ui.isRunning() && !ctx.isLive() && !goBinding.isNone() && !must2(b: goBinding),
+          what: "shutting RmlUi down leaves every handle dead");
+    ctx.update();
+    ui.shutdown();
+    check(t: t, ok: !ui.isRunning(), what: "...and a second shutdown is harmless");
+
+    if (t.failed != 0) {
+        println(s: "rmlui tests: ${t.failed} of ${t.run} failed");
+        return 1;
+    }
+    println(s: "rmlui tests: OK, ${t.run} checks (RmlUi ${version})");
+    return 0;
+}

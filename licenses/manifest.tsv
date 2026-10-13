@@ -1,0 +1,23 @@
+# The licence texts a program linking @kama/rmlui carries, after friendly-fire-department's licenses/manifest.tsv.
+#
+# COLUMNS, tab-separated
+#   key       an identifier for a consumer's own manifest or credits check
+#   legs      which builds CONTAIN the component: `native` (every desktop build that links this package). There is no
+#             web row: @kama/rmlui is not in a wasm build (the web leg of @kama/ui is the browser's DOM).
+#   licence   the SPDX-ish id, short enough for a credits screen
+#   text      path to the full text, relative to this package's root — COMMITTED, never fetched at packaging time
+#   screen    the name a credits screen shows
+#
+# ⚠️ RmlUi VENDORS TWO CONTAINER LIBRARIES AND `RmlUi-MIT.txt` DOES NOT COVER THEM. friendly-fire-department's FR-28
+# found 472 robin_hood + itlib symbols in a shipped binary against a notice that named neither. Their text is RmlUi's
+# Include/RmlUi/Core/Containers/LICENSE.txt, a separate row because they are separate copyright holders.
+#
+# ⚠️ FreeType is dual FTL / GPLv2; this package ELECTS the FTL. The FTL asks for a credit line in the documentation
+# (README.md, "What a program that ships this must carry"). Its built-in copy of zlib's inflate asks nothing of a binary.
+#
+# tools/fetch-rmlui.sh and tools/fetch-freetype.sh compare each text with the pinned tree and warn on a difference.
+#
+# key	legs	licence	text	screen
+rmlui	native	MIT	licenses/RmlUi-MIT.txt	RmlUi 6.3
+rmlui-containers	native	MIT	licenses/RmlUi-containers-MIT.txt	robin_hood + itlib
+freetype	native	FTL	licenses/FreeType-FTL.txt	FreeType

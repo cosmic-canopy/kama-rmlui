@@ -1,0 +1,29 @@
+{
+  "name": "@kama/rmlui",
+  "version": "0.1.0",
+  "license": "MIT OR Apache-2.0",
+  "kind": "library",
+  "kama": ">=0.9.577",
+  "publish": {
+    "exclude": [
+      ".claude/", ".github/", "docs/",
+      "AGENTS.md", "AGENTS.package.md", "AGENTS.rmlui.md", "CLAUDE.md"
+    ]
+  },
+  "modules": {
+    ".": { "visibility": "public" }
+  },
+  "csources": [
+    { "path": "csrc/kama_rmlui.cpp", "compileFor": ["!ARCH_WASM32"] }
+  ],
+  "cincludes": [
+    "csrc",
+    { "path": "third_party/rmlui/Include", "compileFor": ["!ARCH_WASM32"] }
+  ],
+  "link": ["rmlui", "freetype"],
+  "select": {
+    "TARGET": {
+      "WASM": { "link": [] }
+    }
+  }
+}

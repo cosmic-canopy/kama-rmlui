@@ -1,0 +1,13 @@
+# Build artifacts. Everything kama generates lands under one root — see `out` in kama.json.
+out/
+.kama-cache/
+
+# Resolved dependencies. Reproducible from kama.json + kama.lock, so they are not committed.
+.kama/
+
+# Per-machine manifest override (deep-merges over kama.json). Yours, not the project's.
+kama.local.json
+
+# Fetched by tools/fetch-rmlui.sh and tools/fetch-freetype.sh (pinned by SHA), built by `make -C native`.
+third_party/
+native/build/

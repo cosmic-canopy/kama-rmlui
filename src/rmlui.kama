@@ -1,0 +1,1109 @@
+file @compileFor(!ARCH_WASM32);
+// @kama/rmlui — RmlUi 6.3 (an HTML/CSS-like UI library) for kama, as a GENERAL binding: contexts, documents from a file
+// or from text, fonts, provided images, injected input, elements found by id or selector and read or written, and an
+// event queue kama polls. RmlUi draws nothing: `Context.render` records draw commands for whatever renderer the
+// program has (csrc/kama_rmlui.h, "THE SHAPE, AND WHY").
+//
+//   RmlUi        the library: start it, load fonts, provide images, read RmlUi's log and the textures; shut it down
+//   Context      one UI surface: size, input, update, render, the recorded commands, its event queue; destroy it
+//   Document     a loaded document: show, hide, close, find elements, tab order, bindings
+//   Element      any element: tag, id, attributes, classes, inline properties, inner RML, text, a form control's
+//                value, its box, focus, click, listeners
+//   Binding      an id held across rewrites: the same handle for (document, id), re-finding its element and carrying
+//                its listeners to it
+//   Event        one queued event: the listener (and binding) that heard it, its type, the element, the target
+//   Command      one recorded draw (or clip-mask) command; Texture, one font atlas or provided image
+//
+// EVERYTHING IS A VALUE OVER AN INTEGER HANDLE, AND HANDLES ARE SAFE TO HOLD. RmlUi owns the objects, on the C side;
+// these are copyable names for them, with EXPLICIT lifetimes (`RmlUi.shutdown`, `Context.destroy`,
+// `Document.close`) — the trade a window or an audio device makes, and the one that lets a program keep its UI in a
+// module `static` (which may own nothing). The shim tracks each element with RmlUi's ObserverPtr and each handle with
+// a generation, so a handle whose object is gone — a rewrite, a closed document, a destroyed context, a shut-down
+// RmlUi — is DEAD: getters answer None / "" / 0 and setters do nothing, never a read of freed memory. Holding one too
+// long is a logic question, not a memory one.
+//
+// NATIVE ONLY. The static archives this links are native builds (native/Makefile), so every file here is
+// `@compileFor(!ARCH_WASM32)` and the shim's `csources` entry carries the same gate. In a browser, @kama/ui puts the
+// same documents in the DOM instead.
+
+import { std::collections::ConstView };
+export {
+    RmlUi, RmlUiError, Context, Document, Element, Binding, Listener, Event, EventType, Command, CommandKind, Texture,
+    Vertex, Rect, BoxArea, Modal, Focus, LogLevel, LogEntry, encodeRml,
+    LISTEN_BUBBLE, LISTEN_CAPTURE, LISTEN_STOP,
+};
+
+extern "kama_rmlui.h";
+
+extern fn int32 kama_rmlui_initialise();
+extern fn void  kama_rmlui_shutdown();
+extern fn int32 kama_rmlui_is_initialised();
+extern fn int32 kama_rmlui_version();
+extern fn UnsafeConstPtr<uint8> kama_rmlui_string_data();
+extern fn void  kama_rmlui_set_time(float64 seconds);
+extern fn float64 kama_rmlui_time();
+extern fn int32 kama_rmlui_load_font_face(UnsafeConstPtr<cchar> path, int32 fallback);
+extern fn int32 kama_rmlui_load_font_face_memory(UnsafeConstPtr<uint8> data, int32 size, UnsafeConstPtr<cchar> family,
+                                                 int32 weight, int32 italic, int32 fallback);
+extern fn void  kama_rmlui_provide_image(UnsafeConstPtr<cchar> name, UnsafeConstPtr<uint8> rgba, int32 width, int32 height);
+extern fn void  kama_rmlui_set_log_echo(int32 on);
+extern fn int32 kama_rmlui_poll_log(UnsafePtr<int32> type);
+
+extern fn int32 kama_rmlui_context_create(UnsafeConstPtr<cchar> name, int32 width, int32 height);
+extern fn void  kama_rmlui_context_destroy(int32 context);
+extern fn int32 kama_rmlui_context_is_live(int32 context);
+extern fn void  kama_rmlui_context_set_dimensions(int32 context, int32 width, int32 height);
+extern fn void  kama_rmlui_context_set_dp_ratio(int32 context, float32 ratio);
+extern fn void  kama_rmlui_context_update(int32 context);
+extern fn void  kama_rmlui_context_render(int32 context);
+extern fn int32 kama_rmlui_context_focus_element(int32 context);
+extern fn int32 kama_rmlui_context_hover_element(int32 context);
+extern fn int32 kama_rmlui_context_element_at_point(int32 context, float32 x, float32 y);
+extern fn int32 kama_rmlui_context_mouse_move(int32 context, float32 x, float32 y, int32 mods);
+extern fn int32 kama_rmlui_context_mouse_button(int32 context, int32 button, int32 down, int32 mods);
+extern fn int32 kama_rmlui_context_mouse_wheel(int32 context, float32 dx, float32 dy, int32 mods);
+extern fn int32 kama_rmlui_context_mouse_leave(int32 context);
+extern fn int32 kama_rmlui_context_key(int32 context, int32 key, int32 down, int32 mods);
+extern fn int32 kama_rmlui_context_text(int32 context, uint32 codepoint);
+extern fn int32 kama_rmlui_context_text_utf8(int32 context, UnsafeConstPtr<cchar> text);
+
+extern fn int32 kama_rmlui_document_load(int32 context, UnsafeConstPtr<cchar> path);
+extern fn int32 kama_rmlui_document_load_rml(int32 context, UnsafeConstPtr<cchar> rml, UnsafeConstPtr<cchar> source_url);
+extern fn void  kama_rmlui_document_show(int32 document, int32 modal, int32 focus);
+extern fn void  kama_rmlui_document_hide(int32 document);
+extern fn void  kama_rmlui_document_close(int32 document);
+extern fn int32 kama_rmlui_document_title(int32 document);
+extern fn int32 kama_rmlui_document_context(int32 document);
+extern fn int32 kama_rmlui_document_next_tab(int32 document, int32 from, int32 forward, int32 wrap);
+
+extern fn int32 kama_rmlui_element_is_live(int32 element);
+extern fn int32 kama_rmlui_element_by_id(int32 within, UnsafeConstPtr<cchar> id);
+extern fn int32 kama_rmlui_element_query(int32 within, UnsafeConstPtr<cchar> selector);
+extern fn int32 kama_rmlui_element_owner_document(int32 element);
+extern fn int32 kama_rmlui_element_parent(int32 element);
+extern fn int32 kama_rmlui_element_child_count(int32 element);
+extern fn int32 kama_rmlui_element_child(int32 element, int32 index);
+extern fn int32 kama_rmlui_element_focus_leaf(int32 element);
+extern fn int32 kama_rmlui_element_tag(int32 element);
+extern fn int32 kama_rmlui_element_id(int32 element);
+extern fn int32 kama_rmlui_element_inner_rml(int32 element);
+extern fn int32 kama_rmlui_element_text(int32 element);
+extern fn int32 kama_rmlui_element_attribute(int32 element, UnsafeConstPtr<cchar> name);
+extern fn int32 kama_rmlui_element_property(int32 element, UnsafeConstPtr<cchar> name);
+extern fn int32 kama_rmlui_element_value(int32 element);
+extern fn void  kama_rmlui_element_set_inner_rml(int32 element, UnsafeConstPtr<cchar> rml);
+extern fn void  kama_rmlui_element_set_text(int32 element, UnsafeConstPtr<cchar> text);
+extern fn void  kama_rmlui_element_set_attribute(int32 element, UnsafeConstPtr<cchar> name, UnsafeConstPtr<cchar> value);
+extern fn void  kama_rmlui_element_remove_attribute(int32 element, UnsafeConstPtr<cchar> name);
+extern fn int32 kama_rmlui_element_has_class(int32 element, UnsafeConstPtr<cchar> name);
+extern fn void  kama_rmlui_element_set_class(int32 element, UnsafeConstPtr<cchar> name, int32 on);
+extern fn int32 kama_rmlui_element_set_property(int32 element, UnsafeConstPtr<cchar> name, UnsafeConstPtr<cchar> value);
+extern fn int32 kama_rmlui_element_set_value(int32 element, UnsafeConstPtr<cchar> value, int32 quiet);
+extern fn int32 kama_rmlui_element_rect(int32 element, int32 area, UnsafePtr<float32> x, UnsafePtr<float32> y,
+                                        UnsafePtr<float32> width, UnsafePtr<float32> height);
+extern fn int32 kama_rmlui_element_is_visible(int32 element);
+extern fn int32 kama_rmlui_element_focus(int32 element, int32 visible);
+extern fn void  kama_rmlui_element_blur(int32 element);
+extern fn void  kama_rmlui_element_click(int32 element);
+extern fn void  kama_rmlui_element_scroll_into_view(int32 element);
+extern fn int32 kama_rmlui_encode_rml(UnsafeConstPtr<cchar> text);
+
+extern fn int32 kama_rmlui_listen(int32 element, UnsafeConstPtr<cchar> event, int32 flags);
+extern fn void  kama_rmlui_unlisten(int32 listener);
+extern fn int32 kama_rmlui_poll_event(int32 context, UnsafePtr<int32> listener, UnsafePtr<int32> type,
+                                      UnsafePtr<int32> element, UnsafePtr<int32> target, UnsafePtr<int32> binding);
+extern fn void  kama_rmlui_clear_events(int32 context);
+extern fn int32 kama_rmlui_bind(int32 document, UnsafeConstPtr<cchar> id);
+extern fn int32 kama_rmlui_binding_element(int32 binding);
+extern fn int32 kama_rmlui_binding_listen(int32 binding, UnsafeConstPtr<cchar> event, int32 flags);
+extern fn int32 kama_rmlui_binding_of(int32 document, int32 element);
+extern fn int32 kama_rmlui_binding_id(int32 binding);
+extern fn int32 kama_rmlui_event_name();
+extern fn int32 kama_rmlui_event_param_int(UnsafeConstPtr<cchar> name, int32 fallback);
+extern fn float32 kama_rmlui_event_param_float(UnsafeConstPtr<cchar> name, float32 fallback);
+extern fn int32 kama_rmlui_event_param_string(UnsafeConstPtr<cchar> name);
+
+extern fn int32 kama_rmlui_command_count(int32 context);
+extern fn int32 kama_rmlui_command_kind(int32 context, int32 i);
+extern fn UnsafeConstPtr<float32> kama_rmlui_command_vertices(int32 context, int32 i);
+extern fn int32 kama_rmlui_command_vertex_count(int32 context, int32 i);
+extern fn UnsafeConstPtr<int32> kama_rmlui_command_indices(int32 context, int32 i);
+extern fn int32 kama_rmlui_command_index_count(int32 context, int32 i);
+extern fn int32 kama_rmlui_command_geometry(int32 context, int32 i);
+extern fn int32 kama_rmlui_command_texture(int32 context, int32 i);
+extern fn float32 kama_rmlui_command_translate_x(int32 context, int32 i);
+extern fn float32 kama_rmlui_command_translate_y(int32 context, int32 i);
+extern fn int32 kama_rmlui_command_scissor(int32 context, int32 i, UnsafePtr<int32> x, UnsafePtr<int32> y,
+                                           UnsafePtr<int32> width, UnsafePtr<int32> height);
+extern fn int32 kama_rmlui_command_transform(int32 context, int32 i, UnsafePtr<float32> out16);
+
+extern fn int32 kama_rmlui_texture_count();
+extern fn int32 kama_rmlui_texture_width(int32 texture);
+extern fn int32 kama_rmlui_texture_height(int32 texture);
+extern fn UnsafeConstPtr<uint8> kama_rmlui_texture_data(int32 texture);
+extern fn int32 kama_rmlui_texture_generation(int32 texture);
+
+// The runtime's string constructor. ⚠️ It must match std::io::streams' declaration EXACTLY: one C symbol, and kama
+// emits no prototype for an extern, so the compiler's extern-agreement rule is what keeps the two in step.
+extern fn string kama_string_from_raw(UnsafeConstPtr<uint8> src, isize start, isize len);
+
+
+// `Element.listen` flags, OR-ed: hear the event in the CAPTURE phase rather than the bubble phase, and/or STOP its
+// propagation at this element. Propagation is decided inside RmlUi's dispatch, synchronously — a queued event is read
+// too late to stop anything, which is why it is a flag here rather than a method on `Event`.
+comptime int32 LISTEN_BUBBLE = 0;
+comptime int32 LISTEN_CAPTURE = 1;
+comptime int32 LISTEN_STOP = 2;
+
+// ---- the scratch-buffer strings (kama_rmlui.h, "STRINGS OUT") -------------------------------------------------------
+
+unsafe fn Optional<string> taken(int32 n)
+{
+    if (n < 0) { return Optional::None; }
+    UnsafeConstPtr<uint8> p = kama_rmlui_string_data();
+    string s = kama_string_from_raw(src: p, start: 0, len: cast<isize>(n));
+    return Optional::Some(value: give s);
+}
+
+unsafe fn string takenOr(int32 n)
+{
+    if (n <= 0) { return ""; }
+    UnsafeConstPtr<uint8> p = kama_rmlui_string_data();
+    return kama_string_from_raw(src: p, start: 0, len: cast<isize>(n));
+}
+
+fn int32 flag(bool b)
+{
+    if (b) { return 1; }
+    return 0;
+}
+
+// RmlUi's own escaping (< > & "), for text that did not come from the program — a name a player typed — before it
+// goes into `setInnerRml`. `Element.setText` does this itself.
+unsafe fn string encodeRml(const ref string text)
+{
+    int32 n = kama_rmlui_encode_rml(text: text.cstr());
+    return takenOr(n: n);
+}
+
+// ---- small values ------------------------------------------------------------------------------------------------------
+
+type enum RmlUiError implements Error {
+    // Rml::Initialise returned false (RmlUi's log says why).
+    InitialiseFailed,
+    // A context could not be made: the name is taken by a live context, or RmlUi is not started.
+    ContextRefused;
+
+    public const fn string message() {
+        return match (this) {
+            case InitialiseFailed: "RmlUi would not initialise";
+            case ContextRefused:   "RmlUi refused the context: the name is taken, or RmlUi is not started";
+        };
+    }
+}
+
+// Which box of an element (RmlUi's BoxArea).
+type enum BoxArea { Margin, Border, Padding, Content }
+
+fn int32 areaCode(BoxArea a)
+{
+    return match (a) {
+        case Margin:  0;
+        case Border:  1;
+        case Padding: 2;
+        case Content: 3;
+    };
+}
+
+// `Document.show`: whether the document is modal (other documents cannot take focus), and what gets focus.
+type enum Modal { None, Modal, Keep }
+// Nothing; the document itself; whatever had focus last time; or AUTO — the first element with `autofocus`, else the
+// document (RmlUi's default, and what a menu wants).
+type enum Focus { None, Document, Keep, Auto }
+
+fn int32 modalCode(Modal m)
+{
+    return match (m) {
+        case None:  0;
+        case Modal: 1;
+        case Keep:  2;
+    };
+}
+
+fn int32 focusCode(Focus f)
+{
+    return match (f) {
+        case None:     0;
+        case Document: 1;
+        case Keep:     2;
+        case Auto:     3;
+    };
+}
+
+type enum LogLevel { Always, Error, Assert, Warning, Info, Debug }
+
+fn LogLevel levelOf(int32 raw)
+{
+    if (raw == 0) { return LogLevel::Always; }
+    if (raw == 1) { return LogLevel::Error; }
+    if (raw == 2) { return LogLevel::Assert; }
+    if (raw == 3) { return LogLevel::Warning; }
+    if (raw == 5) { return LogLevel::Debug; }
+    return LogLevel::Info;
+}
+
+// One message RmlUi logged (a parse error, a missing font or image, an unknown property).
+type resource LogEntry {
+    LogLevel lvl;
+    string msg;
+
+    public ctor make(LogLevel level, string text)
+    {
+        this.lvl = level;
+        this.msg = give text;
+    }
+
+    public const fn LogLevel level() { return this.lvl; }
+    public const fn string text() { return copy this.msg; }
+    public const fn bool isError() {
+        return match (this.lvl) {
+            case Error:   true;
+            case Assert:  true;
+            case Always:  false;
+            case Warning: false;
+            case Info:    false;
+            case Debug:   false;
+        };
+    }
+}
+
+// The event types `Event.type` names (kama_rmlui.h's KAMA_RMLUI_EV_*). A custom event is `Other`; its name is
+// `RmlUi.eventName()`.
+type enum EventType {
+    Other, Click, Dblclick, Mousedown, Mouseup, Mousemove, Mouseover, Mouseout, Mousescroll, Focus, Blur,
+    Keydown, Keyup, Textinput, Change, Submit, Show, Hide, Load, Unload, Scroll, Resize, Tabchange,
+    Dragstart, Drag, Dragend, Dragover, Dragdrop, Dragout, Dragmove, Handledrag, Animationend, Transitionend
+}
+
+// The C side numbers the types; this is the one place that mapping lives. A ladder rather than a `match` on an int32
+// (kama has no integer patterns), honest about the boundary.
+fn EventType eventTypeOf(int32 raw)
+{
+    if (raw == 1) { return EventType::Click; }
+    if (raw == 2) { return EventType::Dblclick; }
+    if (raw == 3) { return EventType::Mousedown; }
+    if (raw == 4) { return EventType::Mouseup; }
+    if (raw == 5) { return EventType::Mousemove; }
+    if (raw == 6) { return EventType::Mouseover; }
+    if (raw == 7) { return EventType::Mouseout; }
+    if (raw == 8) { return EventType::Mousescroll; }
+    if (raw == 9) { return EventType::Focus; }
+    if (raw == 10) { return EventType::Blur; }
+    if (raw == 11) { return EventType::Keydown; }
+    if (raw == 12) { return EventType::Keyup; }
+    if (raw == 13) { return EventType::Textinput; }
+    if (raw == 14) { return EventType::Change; }
+    if (raw == 15) { return EventType::Submit; }
+    if (raw == 16) { return EventType::Show; }
+    if (raw == 17) { return EventType::Hide; }
+    if (raw == 18) { return EventType::Load; }
+    if (raw == 19) { return EventType::Unload; }
+    if (raw == 20) { return EventType::Scroll; }
+    if (raw == 21) { return EventType::Resize; }
+    if (raw == 22) { return EventType::Tabchange; }
+    if (raw == 23) { return EventType::Dragstart; }
+    if (raw == 24) { return EventType::Drag; }
+    if (raw == 25) { return EventType::Dragend; }
+    if (raw == 26) { return EventType::Dragover; }
+    if (raw == 27) { return EventType::Dragdrop; }
+    if (raw == 28) { return EventType::Dragout; }
+    if (raw == 29) { return EventType::Dragmove; }
+    if (raw == 30) { return EventType::Handledrag; }
+    if (raw == 31) { return EventType::Animationend; }
+    if (raw == 32) { return EventType::Transitionend; }
+    return EventType::Other;
+}
+
+// An element's box, in framebuffer pixels. Zero-sized for a dead element or before any layout.
+type value Rect {
+    public float32 x;
+    public float32 y;
+    public float32 width;
+    public float32 height;
+
+    public ctor make(float32 x, float32 y, float32 width, float32 height)
+    {
+        this.x = x;
+        this.y = y;
+        this.width = width;
+        this.height = height;
+    }
+
+    public ctor empty()
+    {
+        this.x = 0.0;
+        this.y = 0.0;
+        this.width = 0.0;
+        this.height = 0.0;
+    }
+
+    public const fn float32 centerX() { return this.x + this.width * 0.5; }
+    public const fn float32 centerY() { return this.y + this.height * 0.5; }
+}
+
+// One vertex of recorded geometry: position in pixels, texture coordinates, and PREMULTIPLIED colour in 0..1.
+type value Vertex {
+    public float32 x;
+    public float32 y;
+    public float32 u;
+    public float32 v;
+    public float32 r;
+    public float32 g;
+    public float32 b;
+    public float32 a;
+
+    public ctor make(float32 x, float32 y, float32 u, float32 v, float32 r, float32 g, float32 b, float32 a)
+    {
+        this.x = x;
+        this.y = y;
+        this.u = u;
+        this.v = v;
+        this.r = r;
+        this.g = g;
+        this.b = b;
+        this.a = a;
+    }
+}
+
+type enum CommandKind { Draw, ClipEnable, ClipDisable, ClipSet, ClipSetInverse, ClipIntersect }
+
+fn CommandKind commandKindOf(int32 raw)
+{
+    if (raw == 2) { return CommandKind::ClipEnable; }
+    if (raw == 3) { return CommandKind::ClipDisable; }
+    if (raw == 4) { return CommandKind::ClipSet; }
+    if (raw == 5) { return CommandKind::ClipSetInverse; }
+    if (raw == 6) { return CommandKind::ClipIntersect; }
+    return CommandKind::Draw;
+}
+
+// One recorded command. ⚠️ THE TWO POINTERS ARE THE SHIM'S, valid until the next update or render of any context, and
+// read-only (kama_rmlui.h): hand them straight to a GPU upload, or read through `vertex`/`index`, which bounds-check.
+// Apply commands in order — a clip-mask command changes every draw after it.
+type value Command {
+    public CommandKind kind;
+    // A number for the geometry, never reused for different geometry: cache an upload on it.
+    public int32 geometry;
+    // 8 floats a vertex — x, y, u, v, r, g, b, a — premultiplied colour.
+    public UnsafeConstPtr<float32> vertices;
+    public int32 vertexCount;
+    public UnsafeConstPtr<int32> indices;
+    public int32 indexCount;
+    public int32 texture;          // 0 when untextured; else a `RmlUi.texture` handle
+    public float32 translateX;
+    public float32 translateY;
+    public bool scissorEnabled;
+    public int32 scissorX;
+    public int32 scissorY;
+    public int32 scissorWidth;
+    public int32 scissorHeight;
+    public bool transformed;
+    // Column-major 4x4, applied after the translation; the identity when `transformed` is false.
+    public InlineArray<float32>#(16) transform;
+
+    public unsafe ctor empty()
+    {
+        this.kind = CommandKind::Draw;
+        this.geometry = 0;
+        this.vertices = null;
+        this.vertexCount = 0;
+        this.indices = null;
+        this.indexCount = 0;
+        this.texture = 0;
+        this.translateX = 0.0;
+        this.translateY = 0.0;
+        this.scissorEnabled = false;
+        this.scissorX = 0;
+        this.scissorY = 0;
+        this.scissorWidth = 0;
+        this.scissorHeight = 0;
+        this.transformed = false;
+        this.transform = [1.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 1.0f32, 0.0f32, 0.0f32,
+                          0.0f32, 0.0f32, 1.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 1.0f32];
+    }
+
+    // Vertex `i`, bounds-checked (a panic past `vertexCount`, like an index out of range).
+    public unsafe const fn Vertex vertex(int32 i)
+    {
+        if (i < 0 || i >= this.vertexCount) { panic(msg: "rmlui::Command.vertex: index out of range"); }
+        isize at = cast<isize>(i) * 8;
+        UnsafeConstPtr<float32> p = this.vertices;
+        return Vertex.make(x: p[at], y: p[at + 1], u: p[at + 2], v: p[at + 3],
+                           r: p[at + 4], g: p[at + 5], b: p[at + 6], a: p[at + 7]);
+    }
+
+    // Index `i` (into this command's vertices), bounds-checked.
+    public unsafe const fn int32 index(int32 i)
+    {
+        if (i < 0 || i >= this.indexCount) { panic(msg: "rmlui::Command.index: index out of range"); }
+        UnsafeConstPtr<int32> p = this.indices;
+        return p[cast<isize>(i)];
+    }
+}
+
+// One texture: a glyph atlas RmlUi generated, or a provided image once something displayed it. RGBA8, premultiplied,
+// tightly packed. ⚠️ KEY A GPU UPLOAD ON `generation`, not on the handle, the size or the pointer — a recycled slot
+// comes back under the same handle (kama_rmlui.h, "textures").
+type value Texture {
+    public int32 handle;
+    public int32 width;
+    public int32 height;
+    public int32 generation;
+    public UnsafeConstPtr<uint8> pixels;
+
+    public unsafe ctor make(int32 handle, int32 width, int32 height, int32 generation, UnsafeConstPtr<uint8> pixels)
+    {
+        this.handle = handle;
+        this.width = width;
+        this.height = height;
+        this.generation = generation;
+        this.pixels = pixels;
+    }
+
+    public const fn bool isEmpty() { return this.width <= 0 || this.height <= 0; }
+
+    // Byte `i` of the pixels, bounds-checked.
+    public unsafe const fn uint8 byteAt(isize i)
+    {
+        isize n = cast<isize>(this.width) * cast<isize>(this.height) * 4;
+        if (i < 0 || i >= n) { panic(msg: "rmlui::Texture.byteAt: index out of range"); }
+        UnsafeConstPtr<uint8> p = this.pixels;
+        return p[i];
+    }
+}
+
+// ---- the library ----------------------------------------------------------------------------------------------------------
+
+// RmlUi itself: a value naming the process-wide library. `start` once before any context and pair it with ONE `shutdown`
+// (reference counted in the shim, so two parts of a program may each start and shut down; a copy of the value is the
+// same reference, not a second one). Shutting down destroys everything RmlUi held — contexts, documents, elements,
+// bindings, listeners, textures — and every handle into it reads as dead from then on.
+type value RmlUi {
+    bool started;
+
+    ctor made() { this.started = true; }
+
+    // A value holding no reference — what a field starts as before `start` succeeds. Its `shutdown` does nothing.
+    public ctor none() { this.started = false; }
+
+    public unsafe ctor Result<RmlUi, RmlUiError> start()
+    {
+        if (kama_rmlui_initialise() == 0) { return Result::Err(error: RmlUiError::InitialiseFailed); }
+        RmlUi r = RmlUi.made();
+        return Result::Ok(value: r);
+    }
+
+    // Is RmlUi running at all (started by anyone, not shut down)?
+    public unsafe const fn bool isRunning() { return kama_rmlui_is_initialised() != 0; }
+
+    // Give back this start's reference; the last one out shuts RmlUi down. A second call on the same value does nothing.
+    public unsafe fn void shutdown()
+    {
+        if (!this.started) { return; }
+        this.started = false;
+        kama_rmlui_shutdown();
+    }
+
+    public unsafe const fn string version()
+    {
+        int32 n = kama_rmlui_version();
+        return takenOr(n: n);
+    }
+
+    // RmlUi's clock, for animations, transitions and the caret's blink. Monotonic: an earlier time is ignored. Nothing
+    // advances it by itself, so a headless run that never sets it is deterministic.
+    public unsafe fn void setTime(float64 seconds) { kama_rmlui_set_time(seconds: seconds); }
+    public unsafe const fn float64 time() { return kama_rmlui_time(); }
+
+    // A font face from a file. `fallback`: the last resort for codepoints no other face has — ⚠️ a codepoint no face
+    // carries draws as NOTHING, so load display faces first and a broad face last as the fallback.
+    public unsafe fn bool loadFontFace(const ref string path, bool fallback)
+    {
+        return kama_rmlui_load_font_face(path: path.cstr(), fallback: flag(b: fallback)) != 0;
+    }
+
+    // A font face from bytes (embedded in the program). Copied. `family` "" reads it from the face; `weight` 0 is
+    // automatic, else 100..900.
+    public unsafe fn bool loadFontFaceBytes(ConstView<uint8> bytes, const ref string family, int32 weight, bool italic,
+                                            bool fallback)
+    {
+        int32 size = cast<int32>(bytes.length());
+        return kama_rmlui_load_font_face_memory(data: bytes.dataPtr(), size: size, family: family.cstr(), weight: weight,
+                                                italic: flag(b: italic), fallback: flag(b: fallback)) != 0;
+    }
+
+    // Hand over the pixels for an `<img src>` (or any image RmlUi loads) under the RESOLVED name RmlUi will ask for.
+    // RGBA8, premultiplied, tightly packed, width*height*4 bytes; copied. ⚠️⚠️ Before loading the document that shows
+    // it: RmlUi records a miss permanently (kama_rmlui.h, "provided images").
+    public unsafe fn void provideImage(const ref string name, ConstView<uint8> rgba, int32 width, int32 height)
+    {
+        isize want = cast<isize>(width) * cast<isize>(height) * 4;
+        if (width <= 0 || height <= 0 || rgba.length() < want) {
+            panic(msg: "rmlui::RmlUi.provideImage: the buffer is not width*height*4 bytes");
+        }
+        kama_rmlui_provide_image(name: name.cstr(), rgba: rgba.dataPtr(), width: width, height: height);
+    }
+
+    // RmlUi's log: echo it to stdout (the default) or not, and pop the oldest queued message.
+    public unsafe fn void setLogEcho(bool on) { kama_rmlui_set_log_echo(on: flag(b: on)); }
+
+    public unsafe fn Optional<LogEntry> pollLog()
+    {
+        int32 t = 0;
+        int32 n = kama_rmlui_poll_log(type: addr(of: t));
+        if (n < 0) { return Optional::None; }
+        string text = takenOr(n: n);
+        LogEntry e = LogEntry.make(level: levelOf(raw: t), text: give text);
+        return Optional::Some(value: e);
+    }
+
+    // The LAST POLLED event's name ("click", or a custom one) and parameters — "key_identifier", "button", "mouse_x",
+    // "value", "shift_key", … as RmlUi attached them. Valid until the next `pollEvent`.
+    public unsafe const fn string eventName()
+    {
+        int32 n = kama_rmlui_event_name();
+        return takenOr(n: n);
+    }
+
+    public unsafe const fn int32 eventInt(const ref string name, int32 fallback)
+    {
+        return kama_rmlui_event_param_int(name: name.cstr(), fallback: fallback);
+    }
+
+    public unsafe const fn float32 eventFloat(const ref string name, float32 fallback)
+    {
+        return kama_rmlui_event_param_float(name: name.cstr(), fallback: fallback);
+    }
+
+    public unsafe const fn Optional<string> eventString(const ref string name)
+    {
+        int32 n = kama_rmlui_event_param_string(name: name.cstr());
+        return taken(n: n);
+    }
+
+    // The textures, shared by every context: handles 1..textureCount().
+    public unsafe const fn int32 textureCount() { return kama_rmlui_texture_count(); }
+
+    public unsafe const fn Texture texture(int32 handle)
+    {
+        int32 w = kama_rmlui_texture_width(texture: handle);
+        int32 h = kama_rmlui_texture_height(texture: handle);
+        int32 gen = kama_rmlui_texture_generation(texture: handle);
+        UnsafeConstPtr<uint8> px = kama_rmlui_texture_data(texture: handle);
+        return Texture.make(handle: handle, width: w, height: h, generation: gen, pixels: px);
+    }
+
+}
+
+// ---- contexts --------------------------------------------------------------------------------------------------------------
+
+// One UI surface, sized in FRAMEBUFFER PIXELS, with its own documents and its own event queue. Made from a started RmlUi
+// (`ui` is the evidence); `destroy` it when done — its documents go with it. A context outliving its RmlUi is harmless:
+// every call on it then does nothing.
+type value Context {
+    int32 id;
+
+    ctor wrap(int32 id) { this.id = id; }
+
+    // Rebuild one from a handle kept elsewhere (`handle()`); 0, or any dead handle, is a dead context.
+    public ctor fromHandle(int32 handle) { this.id = handle; }
+
+    public unsafe ctor Result<Context, RmlUiError> create(const ref RmlUi ui, const ref string name, int32 width, int32 height)
+    {
+        int32 h = kama_rmlui_context_create(name: name.cstr(), width: width, height: height);
+        if (h == 0) { return Result::Err(error: RmlUiError::ContextRefused); }
+        Context c = Context.wrap(id: h);
+        return Result::Ok(value: c);
+    }
+
+    public const fn int32 handle() { return this.id; }
+    public unsafe const fn bool isLive() { return kama_rmlui_context_is_live(context: this.id) != 0; }
+
+    public unsafe fn void setDimensions(int32 width, int32 height)
+    {
+        kama_rmlui_context_set_dimensions(context: this.id, width: width, height: height);
+    }
+
+    // One `dp` is `ratio` framebuffer pixels: set it from the window's scale and text rasterises at its final size.
+    public unsafe fn void setDpRatio(float32 ratio) { kama_rmlui_context_set_dp_ratio(context: this.id, ratio: ratio); }
+
+    // Layout, animation, deferred closes. Once a frame, then `render`.
+    public unsafe fn void update() { kama_rmlui_context_update(context: this.id); }
+
+    // Record this frame's commands, replacing the last.
+    public unsafe fn void render() { kama_rmlui_context_render(context: this.id); }
+
+    // Load a document — from a file RmlUi opens (relative to the working directory), or from RML text, named
+    // `sourceUrl` in the log and for resolving its relative paths. NOT SHOWN until `show`. None when it would not load
+    // (RmlUi's log says why).
+    public unsafe fn Optional<Document> loadDocument(const ref string path)
+    {
+        int32 h = kama_rmlui_document_load(context: this.id, path: path.cstr());
+        if (h == 0) { return Optional::None; }
+        return Optional::Some(value: Document.fromHandle(handle: h));
+    }
+
+    public unsafe fn Optional<Document> loadDocumentRml(const ref string rml, const ref string sourceUrl)
+    {
+        int32 h = kama_rmlui_document_load_rml(context: this.id, rml: rml.cstr(), source_url: sourceUrl.cstr());
+        if (h == 0) { return Optional::None; }
+        return Optional::Some(value: Document.fromHandle(handle: h));
+    }
+
+    // The element with keyboard focus (a document, when nothing in it is), the one under the pointer, the one at a point.
+    public unsafe fn Optional<Element> focusElement()
+    {
+        int32 h = kama_rmlui_context_focus_element(context: this.id);
+        return someElement(handle: h);
+    }
+
+    public unsafe fn Optional<Element> hoverElement()
+    {
+        int32 h = kama_rmlui_context_hover_element(context: this.id);
+        return someElement(handle: h);
+    }
+
+    public unsafe fn Optional<Element> elementAtPoint(float32 x, float32 y)
+    {
+        int32 h = kama_rmlui_context_element_at_point(context: this.id, x: x, y: y);
+        return someElement(handle: h);
+    }
+
+    // ---- input: each answers TRUE WHEN THE UI CONSUMED IT, false when the application should have it ----
+
+    public unsafe fn bool mouseMove(float32 x, float32 y, int32 mods)
+    {
+        return kama_rmlui_context_mouse_move(context: this.id, x: x, y: y, mods: mods) != 0;
+    }
+
+    // 0 left, 1 right, 2 middle.
+    public unsafe fn bool mouseButton(int32 button, bool down, int32 mods)
+    {
+        return kama_rmlui_context_mouse_button(context: this.id, button: button, down: flag(b: down), mods: mods) != 0;
+    }
+
+    // In notches; +y is down. ⚠️ Scrolls from the HOVERED element — move the pointer first.
+    public unsafe fn bool mouseWheel(float32 dx, float32 dy, int32 mods)
+    {
+        return kama_rmlui_context_mouse_wheel(context: this.id, dx: dx, dy: dy, mods: mods) != 0;
+    }
+
+    public unsafe fn bool mouseLeave() { return kama_rmlui_context_mouse_leave(context: this.id) != 0; }
+
+    // `key` is one of rmlui's KEY_* constants (RmlUi's KeyIdentifier); `mods` an OR of MOD_*.
+    public unsafe fn bool key(int32 key, bool down, int32 mods)
+    {
+        return kama_rmlui_context_key(context: this.id, key: key, down: flag(b: down), mods: mods) != 0;
+    }
+
+    // One typed character (a platform's character event, after the keyboard layout). Control characters are dropped.
+    public unsafe fn bool text(int32 codepoint)
+    {
+        if (codepoint < 0) { return false; }
+        return kama_rmlui_context_text(context: this.id, codepoint: cast<uint32>(codepoint)) != 0;
+    }
+
+    public unsafe fn bool textUtf8(const ref string text)
+    {
+        return kama_rmlui_context_text_utf8(context: this.id, text: text.cstr()) != 0;
+    }
+
+    // ---- the recorded commands, valid until the next update or render ----
+
+    public unsafe const fn int32 commandCount() { return kama_rmlui_command_count(context: this.id); }
+
+    public unsafe const fn Command command(int32 index)
+    {
+        Command c = Command.empty();
+        if (index < 0 || index >= kama_rmlui_command_count(context: this.id)) { return c; }
+        int32 kind = kama_rmlui_command_kind(context: this.id, i: index);
+        c.kind = commandKindOf(raw: kind);
+        c.geometry = kama_rmlui_command_geometry(context: this.id, i: index);
+        c.vertices = kama_rmlui_command_vertices(context: this.id, i: index);
+        c.vertexCount = kama_rmlui_command_vertex_count(context: this.id, i: index);
+        c.indices = kama_rmlui_command_indices(context: this.id, i: index);
+        c.indexCount = kama_rmlui_command_index_count(context: this.id, i: index);
+        c.texture = kama_rmlui_command_texture(context: this.id, i: index);
+        c.translateX = kama_rmlui_command_translate_x(context: this.id, i: index);
+        c.translateY = kama_rmlui_command_translate_y(context: this.id, i: index);
+        int32 sx = 0;
+        int32 sy = 0;
+        int32 sw = 0;
+        int32 sh = 0;
+        int32 on = kama_rmlui_command_scissor(context: this.id, i: index, x: addr(of: sx), y: addr(of: sy),
+                                              width: addr(of: sw), height: addr(of: sh));
+        c.scissorEnabled = on != 0;
+        c.scissorX = sx;
+        c.scissorY = sy;
+        c.scissorWidth = sw;
+        c.scissorHeight = sh;
+        InlineArray<float32>#(16) m = [0.0f32; 16];
+        int32 tf = kama_rmlui_command_transform(context: this.id, i: index, out16: cast<UnsafePtr<float32>>(addr(of: m[0])));
+        c.transformed = tf != 0;
+        c.transform = m;
+        return c;
+    }
+
+    // Destroy it, with every document in it. Every handle into it is dead afterwards.
+    public unsafe fn void destroy() { kama_rmlui_context_destroy(context: this.id); }
+
+    // ---- events ----
+
+    // Pop the oldest event queued in this context, or None. POLLED, never pushed (kama_rmlui.h): drain it once a frame,
+    // after the input and the update that raise events.
+    public unsafe fn Optional<Event> pollEvent()
+    {
+        int32 l = 0;
+        int32 t = 0;
+        int32 e = 0;
+        int32 g = 0;
+        int32 b = 0;
+        int32 got = kama_rmlui_poll_event(context: this.id, listener: addr(of: l), type: addr(of: t), element: addr(of: e),
+                                          target: addr(of: g), binding: addr(of: b));
+        if (got == 0) { return Optional::None; }
+        Event ev = Event.make(listener: Listener.fromHandle(handle: l), binding: Binding.fromHandle(handle: b),
+                              type: eventTypeOf(raw: t), element: Element.fromHandle(handle: e),
+                              target: Element.fromHandle(handle: g));
+        return Optional::Some(value: ev);
+    }
+
+    // Drop everything queued — a screen change, where queued events name elements that are going.
+    public unsafe fn void clearEvents() { kama_rmlui_clear_events(context: this.id); }
+}
+
+fn Optional<Element> someElement(int32 handle)
+{
+    if (handle == 0) { return Optional::None; }
+    return Optional::Some(value: Element.fromHandle(handle: handle));
+}
+
+// ---- documents -------------------------------------------------------------------------------------------------------------
+
+// A loaded document. A value over a handle: copy it freely; once closed (the close lands at the next update) every
+// call on it does nothing and every getter answers None.
+type value Document {
+    int32 hid;
+
+    // Rebuild one from a handle kept elsewhere (`handle()`). An unknown or dead handle is a dead document.
+    public ctor fromHandle(int32 handle) { this.hid = handle; }
+
+    public const fn int32 handle() { return this.hid; }
+    public const fn Element root() { return Element.fromHandle(handle: this.hid); }
+    public unsafe const fn bool isLive() { return kama_rmlui_element_is_live(element: this.hid) != 0; }
+
+    public unsafe fn void show(Modal modal, Focus focus)
+    {
+        kama_rmlui_document_show(document: this.hid, modal: modalCode(m: modal), focus: focusCode(f: focus));
+    }
+
+    public unsafe fn void hide() { kama_rmlui_document_hide(document: this.hid); }
+
+    // ⚠️ Lands at the next `Context.update`, as RmlUi's close does. Listeners on its elements go with them.
+    public unsafe fn void close() { kama_rmlui_document_close(document: this.hid); }
+
+    public unsafe const fn string title()
+    {
+        int32 n = kama_rmlui_document_title(document: this.hid);
+        return takenOr(n: n);
+    }
+
+    public unsafe const fn Optional<Element> byId(const ref string id)
+    {
+        int32 h = kama_rmlui_element_by_id(within: this.hid, id: id.cstr());
+        return someElement(handle: h);
+    }
+
+    public unsafe const fn Optional<Element> query(const ref string selector)
+    {
+        int32 h = kama_rmlui_element_query(within: this.hid, selector: selector.cstr());
+        return someElement(handle: h);
+    }
+
+    // The focused element in this document, or None when NOTHING in it is focused (RmlUi then reports the document
+    // itself, which is not a control: treating it as one would make "is the focus ring on something" always true).
+    public unsafe const fn Optional<Element> focused()
+    {
+        int32 h = kama_rmlui_element_focus_leaf(element: this.hid);
+        if (h == this.hid) { return Optional::None; }
+        return someElement(handle: h);
+    }
+
+    // A binding for `id` in this document: the same handle every time for the same id while the document lives, which
+    // re-finds its element after a rewrite (kama_rmlui.h, "bindings"). None when no element has the id on first bind.
+    public unsafe fn Optional<Binding> bind(const ref string id)
+    {
+        int32 h = kama_rmlui_bind(document: this.hid, id: id.cstr());
+        if (h == 0) { return Optional::None; }
+        return Optional::Some(value: Binding.fromHandle(handle: h));
+    }
+
+    // The binding whose element is `element` right now, or None — what maps "the focused element" back to a name.
+    public unsafe fn Optional<Binding> bindingOf(Element element)
+    {
+        int32 h = kama_rmlui_binding_of(document: this.hid, element: element.handle());
+        if (h == 0) { return Optional::None; }
+        return Optional::Some(value: Binding.fromHandle(handle: h));
+    }
+
+    // The next element in TAB order after `from` (pass `root()` for the first), forward or backward, wrapping or not.
+    public unsafe const fn Optional<Element> nextTab(Element from, bool forward, bool wrap)
+    {
+        int32 h = kama_rmlui_document_next_tab(document: this.hid, from: from.handle(), forward: flag(b: forward),
+                                               wrap: flag(b: wrap));
+        return someElement(handle: h);
+    }
+}
+
+// ---- elements --------------------------------------------------------------------------------------------------------------
+
+// Any element. A value over a handle — the same live element always has the same handle, so two compare with `same`.
+type value Element {
+    int32 hid;
+
+    public ctor fromHandle(int32 handle) { this.hid = handle; }
+
+    public const fn int32 handle() { return this.hid; }
+    public const fn bool same(Element other) { return this.hid == other.hid && this.hid != 0; }
+    public unsafe const fn bool isLive() { return kama_rmlui_element_is_live(element: this.hid) != 0; }
+
+    public unsafe const fn string tag()
+    {
+        int32 n = kama_rmlui_element_tag(element: this.hid);
+        return takenOr(n: n);
+    }
+
+    public unsafe const fn string id()
+    {
+        int32 n = kama_rmlui_element_id(element: this.hid);
+        return takenOr(n: n);
+    }
+
+    public unsafe const fn Optional<Element> byId(const ref string id)
+    {
+        int32 h = kama_rmlui_element_by_id(within: this.hid, id: id.cstr());
+        return someElement(handle: h);
+    }
+
+    public unsafe const fn Optional<Element> query(const ref string selector)
+    {
+        int32 h = kama_rmlui_element_query(within: this.hid, selector: selector.cstr());
+        return someElement(handle: h);
+    }
+
+    public unsafe const fn Optional<Document> ownerDocument()
+    {
+        int32 h = kama_rmlui_element_owner_document(element: this.hid);
+        if (h == 0) { return Optional::None; }
+        return Optional::Some(value: Document.fromHandle(handle: h));
+    }
+
+    public unsafe const fn Optional<Element> parent()
+    {
+        int32 h = kama_rmlui_element_parent(element: this.hid);
+        return someElement(handle: h);
+    }
+
+    public unsafe const fn int32 childCount() { return kama_rmlui_element_child_count(element: this.hid); }
+
+    public unsafe const fn Optional<Element> child(int32 index)
+    {
+        int32 h = kama_rmlui_element_child(element: this.hid, index: index);
+        return someElement(handle: h);
+    }
+
+    // The markup inside the element, and replacing it. ⚠️ A rewrite destroys the old children: handles into them are
+    // dead afterwards — look the new ones up. ⚠️ It is a parser: anything a person typed goes through `setText` or
+    // `encodeRml` first.
+    public unsafe const fn string innerRml()
+    {
+        int32 n = kama_rmlui_element_inner_rml(element: this.hid);
+        return takenOr(n: n);
+    }
+
+    public unsafe fn void setInnerRml(const ref string rml)
+    {
+        kama_rmlui_element_set_inner_rml(element: this.hid, rml: rml.cstr());
+    }
+
+    // The text of every text node inside, in order; and replacing the children with one text node, escaped.
+    public unsafe const fn string text()
+    {
+        int32 n = kama_rmlui_element_text(element: this.hid);
+        return takenOr(n: n);
+    }
+
+    public unsafe fn void setText(const ref string text)
+    {
+        kama_rmlui_element_set_text(element: this.hid, text: text.cstr());
+    }
+
+    public unsafe const fn Optional<string> attribute(const ref string name)
+    {
+        int32 n = kama_rmlui_element_attribute(element: this.hid, name: name.cstr());
+        return taken(n: n);
+    }
+
+    public unsafe fn void setAttribute(const ref string name, const ref string value)
+    {
+        kama_rmlui_element_set_attribute(element: this.hid, name: name.cstr(), value: value.cstr());
+    }
+
+    public unsafe fn void removeAttribute(const ref string name)
+    {
+        kama_rmlui_element_remove_attribute(element: this.hid, name: name.cstr());
+    }
+
+    public unsafe const fn bool hasClass(const ref string name)
+    {
+        return kama_rmlui_element_has_class(element: this.hid, name: name.cstr()) != 0;
+    }
+
+    public unsafe fn void setClass(const ref string name, bool on)
+    {
+        kama_rmlui_element_set_class(element: this.hid, name: name.cstr(), on: flag(b: on));
+    }
+
+    // One inline style property ("width", "43%") — a meter or a marker moved without rewriting markup. True when
+    // RmlUi accepted it.
+    public unsafe fn bool setProperty(const ref string name, const ref string value)
+    {
+        return kama_rmlui_element_set_property(element: this.hid, name: name.cstr(), value: value.cstr()) != 0;
+    }
+
+    public unsafe fn void removeProperty(const ref string name)
+    {
+        string none = "";
+        kama_rmlui_element_set_property(element: this.hid, name: name.cstr(), value: none.cstr());
+    }
+
+    // The computed value of a property, as RCSS text. None for an unknown property or a dead element.
+    public unsafe const fn Optional<string> property(const ref string name)
+    {
+        int32 n = kama_rmlui_element_property(element: this.hid, name: name.cstr());
+        return taken(n: n);
+    }
+
+    // A form control's value (<input>, <textarea>, <select>); None for anything else.
+    public unsafe const fn Optional<string> value()
+    {
+        int32 n = kama_rmlui_element_value(element: this.hid);
+        return taken(n: n);
+    }
+
+    // Set a form control's value. `quiet` drops the `change` event RmlUi raises for it (a browser raises none for a
+    // script's write) — so only a person's edit reaches the queue. False when the element is not a form control.
+    public unsafe fn bool setValue(const ref string value, bool quiet)
+    {
+        return kama_rmlui_element_set_value(element: this.hid, value: value.cstr(), quiet: flag(b: quiet)) != 0;
+    }
+
+    // The box after layout, absolute, in framebuffer pixels. Empty for a dead element.
+    public unsafe const fn Rect rect(BoxArea area)
+    {
+        float32 x = 0.0;
+        float32 y = 0.0;
+        float32 w = 0.0;
+        float32 h = 0.0;
+        int32 ok = kama_rmlui_element_rect(element: this.hid, area: areaCode(a: area), x: addr(of: x), y: addr(of: y),
+                                           width: addr(of: w), height: addr(of: h));
+        if (ok == 0) { return Rect.empty(); }
+        return Rect.make(x: x, y: y, width: w, height: h);
+    }
+
+    public unsafe const fn bool isVisible() { return kama_rmlui_element_is_visible(element: this.hid) != 0; }
+
+    // Focus it (true when it took focus; `visible` shows the focus ring, as keyboard navigation does), blur it,
+    // click it (a real Click event, as a person's would be), scroll it into view.
+    public unsafe fn bool focus(bool visible) { return kama_rmlui_element_focus(element: this.hid, visible: flag(b: visible)) != 0; }
+    public unsafe fn void blur() { kama_rmlui_element_blur(element: this.hid); }
+    public unsafe fn void click() { kama_rmlui_element_click(element: this.hid); }
+    public unsafe fn void scrollIntoView() { kama_rmlui_element_scroll_into_view(element: this.hid); }
+
+    // The deepest focused element at or under this one.
+    public unsafe const fn Optional<Element> focusLeaf()
+    {
+        int32 h = kama_rmlui_element_focus_leaf(element: this.hid);
+        return someElement(handle: h);
+    }
+
+    // Listen for an event ("click", "change", "keydown", a custom name) here. `flags`: LISTEN_BUBBLE, or an OR of
+    // LISTEN_CAPTURE and LISTEN_STOP. ⚠️ RmlUi bubbles: a listener on a container hears its children's events too, so
+    // one click on a button inside it is two events with one target. None for a dead element.
+    public unsafe fn Optional<Listener> listen(const ref string event, int32 flags)
+    {
+        int32 h = kama_rmlui_listen(element: this.hid, event: event.cstr(), flags: flags);
+        if (h == 0) { return Optional::None; }
+        return Optional::Some(value: Listener.fromHandle(handle: h));
+    }
+}
+
+// An id held across rewrites (`Document.bind`). A value over a handle; dead with its document.
+type value Binding {
+    int32 hid;
+
+    public ctor fromHandle(int32 handle) { this.hid = handle; }
+
+    public const fn int32 handle() { return this.hid; }
+    public const fn bool isNone() { return this.hid == 0; }
+    public const fn bool same(Binding other) { return this.hid == other.hid && this.hid != 0; }
+
+    // The element the id names now — re-found, with the binding's listeners moved to it, if the last one was destroyed.
+    public unsafe fn Optional<Element> element()
+    {
+        int32 h = kama_rmlui_binding_element(binding: this.hid);
+        return someElement(handle: h);
+    }
+
+    // Listen through the binding: the listener follows the id to every element it names. Idempotent per (event, flags).
+    public unsafe fn bool listen(const ref string event, int32 flags)
+    {
+        return kama_rmlui_binding_listen(binding: this.hid, event: event.cstr(), flags: flags) != 0;
+    }
+
+    public unsafe const fn string id()
+    {
+        int32 n = kama_rmlui_binding_id(binding: this.hid);
+        return takenOr(n: n);
+    }
+}
+
+// A listener `Element.listen` attached. It goes away with its element, or on `remove`.
+type value Listener {
+    int32 hid;
+
+    public ctor fromHandle(int32 handle) { this.hid = handle; }
+
+    public const fn int32 handle() { return this.hid; }
+    public const fn bool same(Listener other) { return this.hid == other.hid && this.hid != 0; }
+    public unsafe fn void remove() { kama_rmlui_unlisten(listener: this.hid); }
+}
+
+// One queued event: the listener that heard it (and the binding it came through, or a none binding), its type, the
+// element the listener is on, and the TARGET — where it happened (the same element, or a child, since events bubble).
+// Its name and parameters: `RmlUi.eventName` & co., valid until the next poll.
+type value Event {
+    public Listener listener;
+    public Binding binding;
+    public EventType type;
+    public Element element;
+    public Element target;
+
+    public ctor make(Listener listener, Binding binding, EventType type, Element element, Element target)
+    {
+        this.listener = listener;
+        this.binding = binding;
+        this.type = type;
+        this.element = element;
+        this.target = target;
+    }
+}
