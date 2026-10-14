@@ -11,50 +11,52 @@ program's own renderer draws. There is no OpenGL, Vulkan or WebGPU backend insid
 also headless.
 
 > **Status: new, not yet published.** Native only (`@compileFor(!ARCH_WASM32)`). In a browser,
-> [`@kama/ui`](../kama-ui) puts the same documents into the DOM instead. Tested on Linux x86_64. The macOS and Windows
-> build switches come from the two games this was taken from, and have not been run here. Needs **kama ≥ 0.9.577**.
+> [`@kama/ui`](../kama-ui) puts the same documents into the DOM instead. Tested on Linux x86_64 (debug, release,
+> AddressSanitizer). macOS and Windows are not yet run here. Needs **kama ≥ 0.9.577**.
 
 ## Setting it up
 
-RmlUi and FreeType are fetched pinned by SHA and built once by CMake into static archives. Your build links them.
-
-```sh
-tools/fetch-rmlui.sh        # RmlUi 6.3   @ ba95ffe8bfb6 -> third_party/rmlui
-tools/fetch-freetype.sh     # FreeType 2.14.3 @ 0a0221a1347e -> third_party/freetype
-make -C native              # -> native/build/<linux|darwin|windows>/lib/{librmlui,libfreetype}.a  (~12 s on 16 threads)
-```
-
-In the consumer's manifest:
-
-- Add the dependency.
-- Point the **root** project at the archives. The package's `link` already names `rmlui` and `freetype`. A package
-  cannot name a library *path* (kama refuses a relative `-L` from a dependency, by design), so the root names it.
+RmlUi is vendored (`third_party/rmlui`) and compiled by kama into your program. FreeType, its font engine, comes from
+[`@kama/freetype`](../kama-freetype), which is also vendored. There is nothing to fetch, nothing to build with CMake,
+and no `-L` path to set.
 
 ```json
-"dependencies": { "@kama/rmlui": { "path": "../kama-rmlui" } },
-"select": { "TARGET": {
-  "LINUX":   { "ldflags": ["-L../kama-rmlui/native/build/linux/lib"] },
-  "MACOS":   { "ldflags": ["-L../kama-rmlui/native/build/darwin/lib"] },
-  "WINDOWS": { "ldflags": ["-L../kama-rmlui/native/build/windows/lib",
-                           "-static-libgcc", "-Wl,-Bstatic", "-lstdc++", "-lpthread", "-Wl,-Bdynamic"] }
-} }
+"dependencies": { "@kama/rmlui": { "version": "^0.1.0" } }
 ```
 
-How the paths resolve:
+Until the packages are on the registry, depend on the checkouts by path. kama requires a consumer to restate a
+dependency's own path dependencies, so list FreeType too:
 
-- They are relative to the directory `kama build` runs in.
-- A `HOST` build (no `--target`) matches only a `HOST` arm, not the arm for its OS. Either list every OS's directory
-  under `HOST`, as `tests/kama.json` does, or build with `--target LINUX` and so on.
+```json
+"dependencies": {
+  "@kama/rmlui":    { "path": "../kama-rmlui" },
+  "@kama/freetype": { "path": "../kama-freetype" }
+}
+```
 
-The shim (`csrc/kama_rmlui.cpp`) is a `csources` entry. kama compiles it into your program, so the link uses the C++
-driver and brings the C++ runtime on every platform.
+What that costs and buys:
 
-⚠️ **Name your wasm target `WASM`** if a program that depends on this package also builds for the web, as `@kama/ui`'s
-programs do. The sources and include tree are gated on `!ARCH_WASM32`, but kama has no such gate for `link`. The
-package therefore empties its `link` in a `select.TARGET.WASM` arm, and that arm matches only a target with that
-name. A consumer's own target called, say, `WEB` with a wasm triple would still pass `-lrmlui` to `wasm-ld`. The
-gated-out include tree must still exist on disk (kama checks a gated entry's path), so fetch RmlUi even for a web-only
-build.
+- **It is about 190 C++ files.** The first debug build compiles them in about 7 s on 16 threads. After that,
+  `.kama-cache/` reuses them (half a second). A `--release` build compiles them again each time, about 9 s.
+- **A debug build compiles RmlUi at `-O0`.** To keep the layout engine at release speed while debugging your own code,
+  add this to the **root** manifest. Only `-O` changes; `-g` stays.
+
+  ```json
+  "debug": { "optimize": ["rmlui", "freetype"] }
+  ```
+
+- **A debug build turns on RmlUi's own assertions**, because `RMLUI_DEBUG` follows `NDEBUG`. The CMake archives
+  were always release builds, so this is new. One example: a program that ends without `RmlUi.shutdown()` now prints
+  `rmlui assert: RenderInterface is being destroyed …` at exit.
+- **Every source is gated `!ARCH_WASM32`.** That covers the shim, the RmlUi sources and the include tree. A wasm
+  build (`@kama/ui`'s web leg) compiles none of it, whatever the consumer calls its target. The package links no
+  library by name, so there is no `-l` that could reach `wasm-ld`.
+- **Windows** (untested here): link libstdc++ statically, as the two games did. Build with `--cxx g++` so the C++ all
+  comes from one compiler.
+
+  ```json
+  "select": { "TARGET": { "WINDOWS": { "ldflags": ["-static-libgcc", "-Wl,-Bstatic", "-lstdc++", "-lpthread", "-Wl,-Bdynamic"] } } }
+  ```
 
 ## Using it
 
@@ -149,68 +151,73 @@ fn void demo() {
 
 | | version | pin | licence |
 |---|---|---|---|
-| RmlUi (`rmlui_core` only: no debugger, no Lua, no samples) | 6.3 | `ba95ffe8bfb6370efb2cdcca927eaad4710c5413` | MIT |
-| robin_hood, itlib (inside RmlUi's `Include/RmlUi/Core/Containers/`) | as in RmlUi 6.3 | same tree | MIT, separate notices |
-| FreeType | 2.14.3 | `0a0221a1347e2f1e07c395263540026e9a0aa7c7` | FTL (elected; dual FTL / GPLv2) |
+| RmlUi: `Source/Core` and `Include` (Core and Config) only | 6.3 | `ba95ffe8bfb6370efb2cdcca927eaad4710c5413` | MIT |
+| robin_hood and itlib (inside RmlUi's `Include/RmlUi/Core/Containers/`) | as in RmlUi 6.3 | same tree | MIT, separate notices |
+| FreeType, through the `@kama/freetype` dependency | 2.14.3 | that package's `VENDORED` | FTL (taken over GPLv2) |
 
-Fetched by SHA, not committed: about 10 MB of C++, and the SHA is the real pin. The tag is checked only as a warning.
-`third_party/` and `native/build/` are gitignored.
+`tools/vendor-rmlui.sh` is the only thing that writes `third_party/rmlui/`. It works like this:
 
-**CMake rather than `csources`.**
+- It downloads GitHub's archive of the pinned commit and checks its SHA-256.
+- It copies `LICENSE.txt`, `Include/RmlUi/Core.h`, `Include/RmlUi/{Core,Config}/` and `Source/Core/` byte for byte.
+  Only `.cpp`, `.h`, `.inl` and `.hpp` files are copied, plus the containers' `LICENSE.txt`.
+- It regenerates the `csources` block of `kama.json`.
+- It records the result in `third_party/rmlui/VENDORED`.
 
-- @kama/sodium compiles libsodium's 119 C files into every consumer's build. RmlUi is about 200 C++ files, and
-  FreeType's build is driven by its CMake configuration.
-- As `csources`, a debug `kama build` would link an `-O0` layout engine, and every release build would recompile it.
-- `native/Makefile` builds both once at `-O2`, whatever the consumer's tier.
-- That is kama's documented arrangement for a CMake library (docs/targets.md, "A package carries sources, not
-  binaries"): the package says what it links, and the root says where it is.
+Samples, Backends, Tests, Utilities, Dependencies and the build files are **not** vendored, and neither are the
+Debugger, Lua, SVG and Lottie plugins.
 
-The switches, carried over with their reasons from both games' `native/Makefile`:
+**The licence gate: MIT only.** RmlUi 6 keeps its licence in `LICENSE.txt`, not in each file. So:
 
-- **FreeType first, minimal and static.** HarfBuzz, Brotli, BZip2, PNG and system zlib are all OFF.
-  friendly-fire-department measured MSYS2's FreeType pulling 14 more DLLs, some of them LGPL, into an .exe.
-- **RmlUi finds that FreeType through `CMAKE_PREFIX_PATH`.** ⚠️ An RmlUi configured *before* FreeType was built caches
-  the platform's FreeType: `rm -rf native/build/<plat>/rmlui` once. Check `FREETYPE_LIBRARY_RELEASE` in its
-  `CMakeCache.txt`.
-- **`RMLUI_STATIC_LIB`.** Without it, Windows treats every call as `dllimport` and the link fails on `__imp__ZN3Rml…`.
-  The shim defines it itself before including RmlUi, because a dependency's `cflags` would reach every translation
-  unit of the consumer.
-- **C++17.** kama compiles C++ `csources` as `gnu++17`.
-- **On Windows the compilers are GNU** (`g++`). C++ compiled by clang++ against GCC's static libstdc++ printed 35–100
-  COMDAT warnings a link. Build kama programs with `--cxx g++` there too, so the shim matches. (Untested here.)
-- **`-ffile-prefix-map`**, so a shipped binary does not name the build machine's home directory. `-fPIC` everywhere
-  except Windows.
-- **A compiler stamp** (`native/build/<plat>/.toolchain`). A new compiler rebuilds both archives from clean; make
-  cannot see a compiler change on its own.
+- A kept file that names no licence is covered by `LICENSE.txt`.
+- A file that names one must name MIT.
+- Any other licence, any copyleft text, or a `LICENSE.txt` that is no longer MIT fails the run.
+
+At 6.3 the gate **checks 442 files and keeps 442**. Three of them name MIT themselves: robin_hood and the two itlib
+headers. It refuses none.
+
+**How it compiles without leaking into your build.** RmlUi's CMake gives `rmlui_core` three definitions:
+`RMLUI_VERSION`, `RMLUI_FONT_ENGINE_FREETYPE`, and, for a static library, `RMLUI_STATIC_LIB`. A `cflags` entry would
+reach every translation unit of every consumer. Instead:
+
+- Each RmlUi source is compiled through a generated wrapper in `csrc/rmlui/`. The wrapper includes
+  `csrc/rmlui/kama_rmlui_build.h` and then the pristine `.cpp`.
+- RmlUi's own `Source/` directories are never on the include path, so its `Pool.h`, `Clock.h` or `Template.h` cannot
+  shadow one of yours. Your code sees `csrc/` (the shim's header) and `third_party/rmlui/Include`.
+
+The switches carried over from both games' builds, with their reasons:
+
+- **`RMLUI_STATIC_LIB`**, defined by the shim and the wrappers before any RmlUi header. Without it, Windows treats
+  every call as `dllimport` and the link fails on `__imp__ZN3Rml…`.
+- **C++17**, because RmlUi 6 needs it. kama compiles C++ `csources` as `gnu++17`.
+- **FreeType minimal**: no HarfBuzz, Brotli, BZip2, PNG or zlib. friendly-fire-department measured MSYS2's FreeType
+  pulling 14 more DLLs, some of them LGPL, into an .exe. That is now `@kama/freetype`'s configuration.
 
 ## What a program that ships this must carry
 
-`licenses/manifest.tsv` lists the texts. All three ship in **every native build** that links this package:
+`licenses/manifest.tsv` lists the texts. All of them ship in **every native build** that links this package:
 
-1. **RmlUi's MIT notice**: `licenses/RmlUi-MIT.txt`.
-2. **robin_hood's and itlib's MIT notices**: `licenses/RmlUi-containers-MIT.txt`. This is a *separate* notice from
-   separate copyright holders. friendly-fire-department's FR-28 audit found 472 of their symbols in a shipped binary
-   whose notice named neither.
-3. **FreeType's FTL**: `licenses/FreeType-FTL.txt`. The FTL also asks for a **credit line in the documentation** (a
-   credits screen counts):
+1. **RmlUi's MIT notice**: `third_party/rmlui/LICENSE.txt`.
+2. **robin_hood's and itlib's MIT notices**: `third_party/rmlui/Include/RmlUi/Core/Containers/LICENSE.txt`. This is a
+   *separate* notice from separate copyright holders. friendly-fire-department's FR-28 audit found 472 of their symbols
+   in a shipped binary whose notice named neither.
+3. **FreeType's**, from `@kama/freetype` (its README and `licenses/manifest.tsv`):
+   - the FTL, with its credit line in the documentation (a credits screen counts):
 
-   > Portions of this software are copyright © 2026 The FreeType Project (www.freetype.org). All rights reserved.
+     > Portions of this software are copyright © 2026 The FreeType Project (https://freetype.org). All rights reserved.
 
-   The FreeType built here also contains its own copy of zlib's inflate (`src/gzip/`, zlib licence), which asks
-   nothing of a binary distribution.
+   - the MIT notice of FreeType's hashing code.
 
-The fonts the tests use (RmlUi's sample Lato, SIL OFL 1.1) come with the fetch and are never part of a program.
+The test font (Lato, SIL OFL 1.1, `tests/fonts/`) is never part of a program, and it is not published.
 
 ## Tests
 
 ```sh
-tools/fetch-rmlui.sh && tools/fetch-freetype.sh && make -C native
-KAMA=/path/to/kama tools/test.sh      # tests/ debug and release
+KAMA=/path/to/kama tools/test.sh      # tests/: debug, release, and debug under AddressSanitizer (Linux)
 ```
 
-`tests/` is one headless program, **91 checks**, passing in debug and in release. It is also clean under
-AddressSanitizer with leak checking (run by hand: `cflags`/`ldflags` `-fsanitize=address` in a `tests/kama.local.json`).
-It covers:
+`tests/` is one headless program, **91 checks**. It passes in debug, in release, and under AddressSanitizer with leak
+checking. The ASan leg wraps `cc`/`c++` with `-fsanitize=address`, so RmlUi, FreeType and the shim are all
+instrumented. Its font is Lato, committed under `tests/fonts/` with its OFL text. It covers:
 
 - Version 6.3.
 - Font and log handling, including a missing face showing up in the log queue.
@@ -267,6 +274,13 @@ What changed on the way from a game's shim to a general binding:
 - The debugger and Lua plugins.
 - A wasm build of RmlUi.
 
+## Publishing
+
+`kama publish` ships exactly what git tracks, minus `publish.exclude` (`tools/`, `tests/`, the agent notes). The three
+packages publish in order: **@kama/freetype**, then **@kama/rmlui**, then **@kama/ui**. A published package cannot
+carry a `path` dependency, so just before this one publishes, change its `@kama/freetype` dependency from the path to
+`{ "version": "^0.1.0" }`, once `@kama/freetype` 0.1.0 is on the registry.
+
 ## License
 
 `@kama/rmlui` is licensed under either of
@@ -274,8 +288,8 @@ What changed on the way from a game's shim to a general binding:
 - Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
 - MIT license ([LICENSE-MIT](LICENSE-MIT))
 
-at your option. RmlUi (and the containers it vendors) is MIT and FreeType is FTL. Their texts are in `licenses/`, and
-the section above says what a program that ships them carries.
+at your option. RmlUi (and the containers it vendors), in `third_party/rmlui`, is MIT. FreeType comes from
+`@kama/freetype` under the FTL. "What a program that ships this must carry" lists the notices.
 
 ### Contribution
 

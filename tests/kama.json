@@ -4,14 +4,14 @@
   "kind": "executable",
   "kama": ">=0.9.577",
   "entry": "src/main.kama",
-  "dependencies": { "@kama/rmlui": { "path": ".." } },
+  "dependencies": {
+    "@kama/rmlui": { "path": ".." },
+    "@kama/freetype": { "path": "../../kama-freetype" }
+  },
   "modules": { ".": { "visibility": "internal" } },
   "select": {
     "TARGET": {
-      "HOST":    { "ldflags": ["-Lnative/build/linux/lib", "-Lnative/build/darwin/lib", "-Lnative/build/windows/lib"] },
-      "LINUX":   { "ldflags": ["-Lnative/build/linux/lib"] },
-      "MACOS":   { "ldflags": ["-Lnative/build/darwin/lib"] },
-      "WINDOWS": { "ldflags": ["-Lnative/build/windows/lib", "-static-libgcc", "-Wl,-Bstatic", "-lstdc++", "-lpthread", "-Wl,-Bdynamic"] }
+      "WINDOWS": { "ldflags": ["-static-libgcc", "-Wl,-Bstatic", "-lstdc++", "-lpthread", "-Wl,-Bdynamic"] }
     }
   }
 }

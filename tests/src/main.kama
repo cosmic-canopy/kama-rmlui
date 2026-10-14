@@ -2,8 +2,8 @@
 // draws nothing, so a document is laid out, recorded and driven with no window and no GPU. A failing case prints its
 // name; the last line counts them.
 //
-// The font is RmlUi's own sample face (third_party/rmlui/Samples/assets/LatoLatin-Regular.ttf, SIL OFL 1.1), which the
-// fetch brings; nothing font-shaped is committed here.
+// The font is RmlUi's own sample face, LatoLatin (SIL OFL 1.1), committed under tests/fonts/ with its licence
+// (tests/fonts/SOURCES). It is never published.
 
 import {
     core::println,
@@ -59,7 +59,7 @@ fn void check(ref Tally t, bool ok, const ref string what)
     }
 }
 
-fn string font() { return "third_party/rmlui/Samples/assets/LatoLatin-Regular.ttf"; }
+fn string font() { return "tests/fonts/LatoLatin-Regular.ttf"; }
 
 // A small screen: a title, a panel holding two buttons, a text field, a list a rewrite replaces, a transformed badge,
 // and a picture the test provides.

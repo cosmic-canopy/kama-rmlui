@@ -1,6 +1,7 @@
 {
   "lockVersion": 1,
   "packages": {
-    "@kama/rmlui": { "source": "path", "path": "..", "dependencies": [] }
+    "@kama/freetype": { "source": "path", "path": "../../kama-freetype", "dependencies": [] },
+    "@kama/rmlui": { "source": "path", "path": "..", "dependencies": ["@kama/freetype"] }
   }
 }

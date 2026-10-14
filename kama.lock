@@ -1,0 +1,6 @@
+{
+  "lockVersion": 1,
+  "packages": {
+    "@kama/freetype": { "source": "path", "path": "../kama-freetype", "dependencies": [] }
+  }
+}

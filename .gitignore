@@ -7,7 +7,3 @@ out/
 
 # Per-machine manifest override (deep-merges over kama.json). Yours, not the project's.
 kama.local.json
-
-# Fetched by tools/fetch-rmlui.sh and tools/fetch-freetype.sh (pinned by SHA), built by `make -C native`.
-third_party/
-native/build/

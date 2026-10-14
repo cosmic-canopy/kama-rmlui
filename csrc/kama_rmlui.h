@@ -51,9 +51,9 @@
 #define KAMA_RMLUI_H
 
 #ifdef __EMSCRIPTEN__
-// A tripwire, not a portability guard. This header's kama side is `file @compileFor(!ARCH_WASM32)` and the shim's
-// `csources` entry carries the same gate, because the static archives this links are native builds. If either gate
-// ever stops holding, fail here rather than at a confusing link error about a C++ symbol.
+// A tripwire, not a portability guard. This header's kama side is `file @compileFor(!ARCH_WASM32)`, and the shim's and
+// every RmlUi wrapper's `csources` entry carries the same gate, because RmlUi is the native leg (a browser build uses
+// the DOM). If either gate ever stops holding, fail here rather than at a confusing link error about a C++ symbol.
 #error "kama_rmlui.h reached a wasm build — the @compileFor(!ARCH_WASM32) gate did not hold"
 #endif
 

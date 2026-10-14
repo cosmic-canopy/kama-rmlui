@@ -22,9 +22,9 @@ file @compileFor(!ARCH_WASM32);
 // RmlUi — is DEAD: getters answer None / "" / 0 and setters do nothing, never a read of freed memory. Holding one too
 // long is a logic question, not a memory one.
 //
-// NATIVE ONLY. The static archives this links are native builds (native/Makefile), so every file here is
-// `@compileFor(!ARCH_WASM32)` and the shim's `csources` entry carries the same gate. In a browser, @kama/ui puts the
-// same documents in the DOM instead.
+// NATIVE ONLY. RmlUi (vendored, third_party/rmlui) is compiled for native targets, so every file here is
+// `@compileFor(!ARCH_WASM32)` and every `csources` entry carries the same gate. In a browser, @kama/ui puts the same
+// documents in the DOM instead.
 
 import { std::collections::ConstView };
 export {

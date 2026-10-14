@@ -1,0 +1,9 @@
+The test font. Committed for the tests, never published (kama.json's `publish.exclude` names tests/), and never part of
+a program. It is unmodified, so the OFL's Reserved Font Name clause does not come into play. Until 0.1.0 the tests read
+it from the fetched RmlUi tree. RmlUi's Samples are not vendored, so it is committed here.
+
+LatoLatin-Regular.ttf      TrueType outlines; the tests' documents name its family, `LatoLatin`
+  from     RmlUi 6.3 (commit ba95ffe8bfb6370efb2cdcca927eaad4710c5413), Samples/assets/LatoLatin-Regular.ttf
+  sha256   d785334ac4e7810f571def986bbad41161f68ac385db8813f798bf04d71478e1
+  licence  SIL Open Font License 1.1. Copyright (c) 2010-2015 Łukasz Dziedzic, Reserved Font Name "Lato".
+           LatoLatin-OFL.txt is lines 4-109 of RmlUi's Samples/assets/LICENSE.txt (the Lato section), verbatim.

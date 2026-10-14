@@ -1,0 +1,16 @@
+RmlUi 6.3
+https://github.com/mikke89/RmlUi/archive/ba95ffe8bfb6370efb2cdcca927eaad4710c5413.tar.gz
+sha256 1541ef5577115e9368f8ed389b29f0925ef6572f326a33d378ea16c3cfa2cde8
+git: tag 6.3 = commit ba95ffe8bfb6370efb2cdcca927eaad4710c5413
+
+Licence: MIT (LICENSE.txt). RmlUi's containers, robin_hood and itlib, are MIT under their own notices
+(Include/RmlUi/Core/Containers/LICENSE.txt). Both notices ship with every native build.
+
+Licence gate: 442 candidate files checked, 442 kept, 0 refused. 3 name MIT themselves; the rest name no
+licence and are covered by LICENSE.txt.
+
+Kept, byte-identical (.cpp/.h/.inl/.hpp, plus the two licence files): Source/Core, Include/RmlUi/Core.h,
+Include/RmlUi/Core, Include/RmlUi/Config. 191 sources, one wrapper each in csrc/rmlui/.
+
+Not vendored: Samples, Backends, Tests, Utilities, Dependencies, CMake, and the Debugger, Lua, SVG and
+Lottie plugins. The FreeType font engine compiles against @kama/freetype.

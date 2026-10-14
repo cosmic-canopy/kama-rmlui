@@ -12,12 +12,14 @@
 //     the seam that has a keyboard of its own to reconcile, which is @kama/ui.
 //   - Strings come back through one scratch buffer; RmlUi's log is a queue as well as stdout.
 //
-// This is the ONLY file that includes an RmlUi header. It compiles as C++17 (kama's `csources` default, gnu++17).
+// This is the ONLY hand-written file that includes an RmlUi header (csrc/rmlui/ holds the generated wrappers that
+// compile RmlUi itself). It compiles as C++17 (kama's `csources` default, gnu++17).
 
-// ⚠️ THE ARCHIVE native/Makefile BUILDS IS STATIC ON EVERY PLATFORM, so RmlUi's headers must be told so before they
-// are read: on Windows every call is otherwise a `__declspec(dllimport)` and the link fails on `__imp__ZN3Rml…`
-// against a perfectly good librmlui.a (friendly-fire-department). Defined here rather than as a manifest flag,
-// because a dependency's `cflags` reach every translation unit of the consumer's build.
+// ⚠️ RMLUI IS COMPILED INTO THE PROGRAM, STATIC ON EVERY PLATFORM (the wrappers in csrc/rmlui/), so RmlUi's headers
+// must be told so before they are read: on Windows every call is otherwise a `__declspec(dllimport)` and the link
+// fails on `__imp__ZN3Rml…` (friendly-fire-department). The wrappers define it the same way
+// (csrc/rmlui/kama_rmlui_build.h). Defined here rather than as a manifest flag, because a dependency's `cflags` reach
+// every translation unit of the consumer's build.
 #ifndef RMLUI_STATIC_LIB
 #define RMLUI_STATIC_LIB 1
 #endif
