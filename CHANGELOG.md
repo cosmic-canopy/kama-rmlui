@@ -5,7 +5,7 @@ package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.1.1] — unreleased
+## [0.1.1] — 2026-10-14
 
 Additions and fixes only: no existing signature changes.
 
