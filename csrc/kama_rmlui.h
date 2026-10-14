@@ -1,9 +1,9 @@
 // kama_rmlui.h — the C ABI between kama and RmlUi 6.3 (csrc/kama_rmlui.cpp is the only thing that includes RmlUi).
 //
-// From the-mallow-man's ui/src/tmm_ui.h (E7b/E7c, 2026-10-07), itself from friendly-fire-department@a676ca3's
-// ffd_ui.h, made GENERAL: several contexts, any number of documents, element handles for any element (not only ones
-// bound by id), listeners on any event, and the optional RenderInterface features (transforms, clip masks). The
-// one-context, one-document, bind-by-id policy those games had now lives in their UI seam (@kama/ui), on top of this.
+// Grown from the UI shim header two games had built for their menus (one copied from the other, then extended), made
+// GENERAL: several contexts, any number of documents, element handles for any element (not only ones bound by id),
+// listeners on any event, and the optional RenderInterface features (transforms, clip masks). The one-context,
+// one-document, bind-by-id policy those games had now lives in their UI seam (@kama/ui), on top of this.
 //
 // THE SHAPE, AND WHY
 // ------------------
@@ -30,7 +30,7 @@
 // tracks its element with RmlUi's own `ObserverPtr`, so a handle whose element was destroyed — by `set_inner_rml`,
 // by closing its document — answers as DEAD (every getter returns its "none" value, every setter does nothing)
 // instead of reading freed memory. ⚠️ **That is the fix for the hazard both games documented at length**: their
-// shims held a raw `Rml::Element*` per binding, a rewrite freed it, and the-mallow-man repaired it with a write
+// shims held a raw `Rml::Element*` per binding, a rewrite freed it, and one of them repaired it with a write
 // counter because "a destroyed element's memory is commonly reused by the element that replaces it, so the two
 // addresses are equal and the comparison lies". An observer pointer cannot lie that way. A handle also carries a
 // generation, so a recycled slot never answers to an old handle.
@@ -242,13 +242,20 @@ void    kama_rmlui_element_set_inner_rml(int32_t element, const char* rml);
 void    kama_rmlui_element_set_text(int32_t element, const char* text);
 void    kama_rmlui_element_set_attribute(int32_t element, const char* name, const char* value);
 void    kama_rmlui_element_remove_attribute(int32_t element, const char* name);
+// The same two writes, QUIET: no `change` event they make RmlUi raise is queued. ⚠️ RmlUi raises `change` for a
+// script's write to a control's attribute (a checkbox's or a radio's `checked`, a range's `value`, `min` or `max`);
+// a browser raises none. So a program that mirrors its own state into a control writes it quietly, and only a
+// person's edit reaches the queue. Like `set_value`'s `quiet`, it covers every `change` raised during the call (the
+// other radios of a group unchecked by checking one).
+void    kama_rmlui_element_set_attribute_quiet(int32_t element, const char* name, const char* value);
+void    kama_rmlui_element_remove_attribute_quiet(int32_t element, const char* name);
 int32_t kama_rmlui_element_has_class(int32_t element, const char* name);
 void    kama_rmlui_element_set_class(int32_t element, const char* name, int32_t on);
 // One inline style property ("width", "43%"). An empty value removes it. 1 when RmlUi accepted it.
 int32_t kama_rmlui_element_set_property(int32_t element, const char* name, const char* value);
 // Set a form control's value. ⚠️ RmlUi RAISES A `change` EVENT FOR THIS, AND A BROWSER'S `el.value = …` DOES NOT
-// (measured by friendly-fire-department's uispike): `quiet` 1 drops that event, so only a person's edit is queued.
-// 1 when the element is a form control.
+// (measured, not read off the source): `quiet` 1 drops that event, so only a person's edit is
+// queued. 1 when the element is a form control.
 int32_t kama_rmlui_element_set_value(int32_t element, const char* value, int32_t quiet);
 
 // The element's box after layout, absolute, in framebuffer pixels. `area`: 0 margin, 1 border, 2 padding, 3 content.
@@ -260,6 +267,23 @@ int32_t kama_rmlui_element_focus(int32_t element, int32_t visible);
 void    kama_rmlui_element_blur(int32_t element);
 void    kama_rmlui_element_click(int32_t element);
 void    kama_rmlui_element_scroll_into_view(int32_t element);
+
+// Scrolling, as the DOM names it, in framebuffer pixels. The scroll offset (`scroll_top`, `scroll_left`); the size of
+// the scrollable content including the padding (`scroll_height`, `scroll_width`, never less than the client size); and
+// the padding box less any scrollbar (`client_height`, `client_width`). So `scroll_top == scroll_height - client_height`
+// is "at the bottom".
+// ⚠️ THE SIZES ARE LAYOUT'S, VALID AFTER `context_update`: content written since (a new line in a log) is not in them
+// yet, and a `set_scroll_*` CLAMPS against them (to 0..scroll_height - client_height, rounded to a whole pixel, as
+// RmlUi's own does). To keep a log on its newest line: write the line, update, then set `scroll_top` to
+// `scroll_height`. A change of offset raises a `scroll` event. A dead handle reads 0 and ignores the set.
+float   kama_rmlui_element_scroll_top(int32_t element);
+void    kama_rmlui_element_set_scroll_top(int32_t element, float top);
+float   kama_rmlui_element_scroll_left(int32_t element);
+void    kama_rmlui_element_set_scroll_left(int32_t element, float left);
+float   kama_rmlui_element_scroll_height(int32_t element);
+float   kama_rmlui_element_scroll_width(int32_t element);
+float   kama_rmlui_element_client_height(int32_t element);
+float   kama_rmlui_element_client_width(int32_t element);
 
 // RmlUi's own escaping (StringUtilities::EncodeRml: < > & "), into the scratch buffer.
 int32_t kama_rmlui_encode_rml(const char* text);
@@ -310,6 +334,13 @@ int32_t kama_rmlui_encode_rml(const char* text);
 // browser's model as well, and it is what the two backends of @kama/ui both preserve.
 //
 // A listener goes away with its element (RmlUi detaches it; the handle is dead from then) or on `unlisten`.
+//
+// ⚠️ A RANGE'S `change` IS QUEUED ONLY WHEN ITS VALUE CHANGED. RmlUi's slider raises `change` on EVERY movement, so a
+// step past either end or a drag that stays within one step raises one with the value it already had. The shim drops
+// those: a range's `change` whose value equals the value the range held before the movement (RmlUi's own `value`
+// attribute, which it updates only after a real change) is not queued. Every real change still is, one per step
+// crossed, so a slider previews live. A script's write (`set_value`, `set_attribute`) that moves the value is a real
+// change and is kept, unless it was written quietly.
 #define KAMA_RMLUI_LISTEN_CAPTURE 1
 #define KAMA_RMLUI_LISTEN_STOP    2
 int32_t kama_rmlui_listen(int32_t element, const char* event, int32_t flags);
@@ -404,7 +435,7 @@ int32_t        kama_rmlui_command_transform(int32_t context, int32_t i, float* o
 //
 // ⚠️ A HANDLE IS AN INDEX AND A RELEASED SLOT IS RECYCLED, so one handle can hold a different atlas later — and
 // neither the size nor the data pointer can tell you (two glyph atlases are often the same size, and a freed buffer is
-// often reallocated at the same address; the-mallow-man shipped garbled text from exactly that). The GENERATION is
+// often reallocated at the same address; a game shipped garbled text from exactly that). The GENERATION is
 // bumped every time a slot is filled: a renderer that maps these to GPU textures must key its upload on it.
 int32_t        kama_rmlui_texture_count(void);
 int32_t        kama_rmlui_texture_width(int32_t texture);

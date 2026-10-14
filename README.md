@@ -10,7 +10,7 @@ or selector and then read or written, and an event queue that kama polls.
 program's own renderer draws. There is no OpenGL, Vulkan or WebGPU backend inside, so it works with any renderer and
 also headless.
 
-> **Status: new, not yet published.** Native only (`@compileFor(!ARCH_WASM32)`). In a browser,
+> **Status: published** (registry.kama-lang.org, 0.1.0 on 2026-10-13). Native only (`@compileFor(!ARCH_WASM32)`). In a browser,
 > [`@kama/ui`](../kama-ui) puts the same documents into the DOM instead. Tested on Linux x86_64 (debug, release,
 > AddressSanitizer). macOS and Windows are not yet run here. Needs **kama ≥ 0.9.577**.
 
@@ -21,7 +21,7 @@ RmlUi is vendored (`third_party/rmlui`) and compiled by kama into your program. 
 and no `-L` path to set.
 
 ```json
-"dependencies": { "@kama/rmlui": { "version": "^0.1.0" } }
+"dependencies": { "@kama/rmlui": { "version": "^0.1.1" } }
 ```
 
 To build against a checkout instead (working on the package itself), override it in your gitignored
@@ -98,7 +98,7 @@ fn void demo() {
 | `RmlUi` | The library: `start` / `shutdown` (reference counted). Also `loadFontFace`, `loadFontFaceBytes`, `provideImage`, `setTime`, `pollLog` / `setLogEcho`, `textureCount` / `texture`, and the last event's `eventName` / `eventInt` / `eventFloat` / `eventString`. |
 | `Context` | One surface in framebuffer pixels: `create` / `destroy`, `setDimensions`, `setDpRatio`, `update`, `render`, `commandCount` / `command`. Input: `mouseMove`, `mouseButton`, `mouseWheel`, `mouseLeave`, `key`, `text`, `textUtf8`; each returns **true when the UI consumed it**. Also `loadDocument` / `loadDocumentRml`, `focusElement` / `hoverElement` / `elementAtPoint`, `pollEvent`, `clearEvents`. |
 | `Document` | `show(modal:, focus:)`, `hide`, `close`, `title`, `byId`, `query`, `focused` (None when nothing in it is), `nextTab`, `bind`, `bindingOf`, `root`. |
-| `Element` | Reading: `tag`, `id`, `attribute`, `hasClass`, `property` (computed), `value` (form controls), `innerRml`, `text`, `rect(area:)`, `isVisible`, `parent` / `childCount` / `child`, `byId` / `query`. Writing: `setInnerRml`, `setText` (escaped), `setAttribute` / `removeAttribute`, `setClass`, `setProperty` / `removeProperty` (inline style), `setValue(value:, quiet:)`. Actions: `focus`, `blur`, `click`, `scrollIntoView`, `listen(event:, flags:)`. |
+| `Element` | Reading: `tag`, `id`, `attribute`, `hasClass`, `property` (computed), `value` (form controls), `innerRml`, `text`, `rect(area:)`, `isVisible`, `parent` / `childCount` / `child`, `byId` / `query`. Writing: `setInnerRml`, `setText` (escaped), `setAttribute` / `removeAttribute`, `setAttributeQuietly` / `removeAttributeQuietly`, `setClass`, `setProperty` / `removeProperty` (inline style), `setValue(value:, quiet:)`. Scrolling: `scrollTop` / `setScrollTop(top:)`, `scrollLeft` / `setScrollLeft(left:)`, `scrollHeight`, `scrollWidth`, `clientHeight`, `clientWidth`. Actions: `focus`, `blur`, `click`, `scrollIntoView`, `listen(event:, flags:)`. |
 | `Binding` | An id held across rewrites: `element`, `listen`, `id` (see below). |
 | `Event` | `listener`, `binding`, `type` (`EventType`), `element` (where it was heard), `target` (where it happened). |
 | `Command`, `Texture`, `Vertex`, `Rect` | The recording: `kind` (`Draw`, `ClipEnable`, `ClipDisable`, `ClipSet`, `ClipSetInverse`, `ClipIntersect`), raw pointers for an upload plus bounds-checked `vertex(i)` / `index(i)` / `byteAt(i)`. |
@@ -132,12 +132,24 @@ fn void demo() {
   `EncodeRml`).
 - **`setValue(quiet: true)`**: RmlUi raises `change` when a script writes a range or a checkbox. A browser does not.
   `quiet` drops that event, so only a person's edit is queued.
+- **`setAttributeQuietly` / `removeAttributeQuietly`** are the same for attributes. Writing a checkbox's `checked`
+  (or a radio's, or a range's `value`) makes RmlUi raise `change`; the quiet writes queue none. Mirror a program's
+  state into its controls with these.
+- **A range's `change` is queued only when its value changed.** RmlUi's slider raises `change` on every movement, so
+  a step past either end, or a drag that stays within one step, raises one with the value it already had. The shim
+  drops those: it compares the event's value with the range's `value` attribute, which RmlUi updates only after a real
+  change. Every real change is kept, one per step crossed, so a slider still previews live. A loud script write that
+  moves the value is a real change and is kept.
+- **Scrolling reads the last layout.** `scrollHeight`, `clientHeight` and the rest are valid after the context's
+  `update()`, and `setScrollTop` / `setScrollLeft` clamp against them (to `0..scrollHeight - clientHeight`, whole
+  pixels). To keep a log on its newest line: write the line, `update()`, then `setScrollTop(top: log.scrollHeight())`.
+  A change of offset raises `scroll`.
 - **Provided images.**
   - The shim opens no image files. You decode the image and hand over premultiplied RGBA8 under the name RmlUi
     resolves the `src` to: a leading `/` is stripped, and any other path is joined onto the document's directory.
   - **Provide before loading the document that shows it.** RmlUi records a miss permanently.
 - **Textures.** A handle is a slot that gets recycled. Key a GPU upload on `Texture.generation`, never on the handle,
-  the size or the pointer. (The Mallow Man shipped garbled text from that once.)
+  the size or the pointer. (A game shipped garbled text from that once.)
 - **Fonts.** A codepoint no loaded face has draws as *nothing*. Load a broad face last, with `fallback: true`.
 - **RmlUi's log** is queued (`pollLog`) and echoed to stdout by default. Otherwise "the document loaded but nothing
   laid out" is silent.
@@ -186,7 +198,7 @@ The switches carried over from both games' builds, with their reasons:
 - **`RMLUI_STATIC_LIB`**, defined by the shim and the wrappers before any RmlUi header. Without it, Windows treats
   every call as `dllimport` and the link fails on `__imp__ZN3Rml…`.
 - **C++17**, because RmlUi 6 needs it. kama compiles C++ `csources` as `gnu++17`.
-- **FreeType minimal**: no HarfBuzz, Brotli, BZip2, PNG or zlib. friendly-fire-department measured MSYS2's FreeType
+- **FreeType minimal**: no HarfBuzz, Brotli, BZip2, PNG or zlib. One of the games measured MSYS2's FreeType
   pulling 14 more DLLs, some of them LGPL, into an .exe. That is now `@kama/freetype`'s configuration.
 
 ## What a program that ships this must carry
@@ -195,8 +207,8 @@ The switches carried over from both games' builds, with their reasons:
 
 1. **RmlUi's MIT notice**: `third_party/rmlui/LICENSE.txt`.
 2. **robin_hood's and itlib's MIT notices**: `third_party/rmlui/Include/RmlUi/Core/Containers/LICENSE.txt`. This is a
-   *separate* notice from separate copyright holders. friendly-fire-department's FR-28 audit found 472 of their symbols
-   in a shipped binary whose notice named neither.
+   *separate* notice from separate copyright holders. A licence audit found 472 of their symbols in a
+   shipped game's binary whose notice named neither.
 3. **FreeType's**, from `@kama/freetype` (its README and `licenses/manifest.tsv`):
    - the FTL, with its credit line in the documentation (a credits screen counts):
 
@@ -212,7 +224,7 @@ The test font (Lato, SIL OFL 1.1, `tests/fonts/`) is never part of a program, an
 KAMA=/path/to/kama tools/test.sh      # tests/: debug, release, and debug under AddressSanitizer (Linux)
 ```
 
-`tests/` is one headless program, **91 checks**. It passes in debug, in release, and under AddressSanitizer with leak
+`tests/` is one headless program, **116 checks**. It passes in debug, in release, and under AddressSanitizer with leak
 checking. The ASan leg wraps `cc`/`c++` with `-fsanitize=address`, so RmlUi, FreeType and the shim are all
 instrumented. Its font is Lato, committed under `tests/fonts/` with its OFL text. It covers:
 
@@ -231,6 +243,12 @@ instrumented. Its font is Lato, committed under `tests/fonts/` with its OFL text
 - TAB, the arrows and RETURN.
 - Typing, Backspace, Home and Delete in a text field, and a keydown's `key_identifier`.
 - Quiet and loud value writes.
+- Quiet and loud attribute writes, counted in `change` events: a checkbox's `checked` set and removed both ways, and
+  a range's `value`.
+- A range's `change` only when its value changed, heard on the range and on its container: RIGHT and LEFT one step
+  each, steps past both ends, a press at the bar, a drag within one step, and a drag across steps (one change a step).
+- Scrolling: a log's sizes after the update and still stale before it, a clamped `setScrollTop`, a log kept on its
+  newest line, the same across with `setScrollLeft`, and a dead element reading 0.
 - Text, markup, attributes, classes and inline properties read back after writing.
 - **A child handle going dead, not dangling, after a rewrite.** A binding keeping its handle across that rewrite and
   carrying its listener to the new element.
@@ -242,11 +260,9 @@ what shows the gates hold. The shim's `#error` tripwire never fires there.
 
 ## Where it came from
 
-The shim is the-mallow-man's `ui/src/tmm_ui_native.cpp` and `tmm_ui.h` (E7b/E7c, 2026-10-07). Those were
-friendly-fire-department's `ffd_ui_native.cpp` and `ffd_ui.h` (a676ca3, last changed 2026-09-29), renamed and extended
-by the-mallow-man for text entry, focus, a real clock and inline properties. **The Mallow Man's copy was the base**.
-After the rename, friendly-fire-department's copy held nothing the newer one lacked; the only lines unique to it were
-a comment giving its stage size.
+The shim began as the UI shim two games had built for their RmlUi menus. The second game copied the first's, renamed
+it, and extended it for text entry, focus, a real clock and inline properties. **The newer copy was the base**: the
+older one held nothing it lacked, and the only lines unique to it were a comment giving its stage size.
 
 What changed on the way from a game's shim to a general binding:
 
@@ -260,7 +276,7 @@ What changed on the way from a game's shim to a general binding:
 | draws and scissors recorded | also transforms and clip masks | RCSS `transform` and rounded `overflow: hidden` now reach the renderer |
 | `uint8_t*` / `float*` out | `const` pointers, `UnsafeConstPtr` in kama | the games' headers said this was owed once kama could spell it |
 | `printf` of RmlUi's log | a queue plus stdout | tests can assert on it |
-| built into `libtmm_ui.a` by the game's Makefile | a `csources` entry | the package compiles its own glue |
+| built into a static library by the game's Makefile | a `csources` entry | the package compiles its own glue |
 
 ## Not here yet
 

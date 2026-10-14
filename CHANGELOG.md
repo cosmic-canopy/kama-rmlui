@@ -5,10 +5,25 @@ package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.1.0] — unreleased
+## [0.1.1] — unreleased
 
-The first version, made general from the UI shim the-mallow-man (E7b/E7c, 2026-10-07) and friendly-fire-department
-(a676ca3) had built for their menus. README.md, "Where it came from", lists what changed and why.
+Additions and fixes only: no existing signature changes.
+
+- `Element` scrolls: `scrollTop` / `setScrollTop(top:)`, `scrollLeft` / `setScrollLeft(left:)`, `scrollHeight`,
+  `scrollWidth`, `clientHeight` and `clientWidth`, RmlUi's own accessors under the DOM's names. The sizes are the last
+  layout's, valid after the context's `update()`, and a set clamps against them.
+- `Element.setAttributeQuietly(name:, value:)` and `Element.removeAttributeQuietly(name:)`: attribute writes that queue
+  no `change`, as `setValue(quiet: true)` does for values. Writing a checkbox's `checked` no longer has to raise one.
+- A range's `change` is queued only when its value changed. RmlUi raises one on every slider movement, including a
+  step past either end and a drag within one step; the shim drops those whose value equals the range's `value`
+  attribute (the value before the movement). Real changes, one per step crossed, are all kept.
+- Docs and comments name no particular program: the provenance notes say "two games" and keep the facts.
+- `tests/`: 116 checks (scroll values after an update, `change` counts for quiet and loud attribute writes and for
+  range movements).
+
+## [0.1.0] — 2026-10-13
+
+The first version, made general from the UI shim two games had built for their menus. README.md, "Where it came from", lists what changed and why.
 
 - RmlUi 6.3 is vendored by `tools/vendor-rmlui.sh`, pinned by commit and SHA-256, and compiled by kama.
   - Only `Source/Core` and `Include` (Core and Config) are kept, with both MIT notices.

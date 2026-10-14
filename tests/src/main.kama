@@ -34,6 +34,8 @@ import {
     rmlui::KEY_RETURN,
     rmlui::KEY_BACKSPACE,
     rmlui::KEY_DOWN,
+    rmlui::KEY_LEFT,
+    rmlui::KEY_RIGHT,
     rmlui::KEY_HOME,
     rmlui::KEY_DELETE,
     rmlui::MOD_NONE,
@@ -92,6 +94,56 @@ fn string screen()
         <img id='pic' src='/img/dot'/>
         <input id='level' type='range' min='0' max='1' step='0.1' value='0.5'/>
     </body></rml>";
+}
+
+// A second screen, in a context of its own: a log that scrolls, a box that scrolls across, a checkbox, and a range
+// of whole steps inside a container that listens too.
+fn string controls()
+{
+    return "<rml><head><title>Controls</title><style>
+        body { font-family: LatoLatin; font-size: 20dp; color: #ffffff; width: 100%; height: 100%; }
+        div, p { display: block; }
+        #log { width: 300dp; height: 100dp; overflow-y: auto; }
+        #log p { height: 20dp; line-height: 20dp; }
+        scrollbarvertical { width: 10dp; }
+        scrollbarvertical slidertrack { background-color: #404040ff; }
+        scrollbarvertical sliderbar { background-color: #ffffffff; }
+        #wide { width: 300dp; height: 40dp; overflow-x: auto; overflow-y: hidden; }
+        #wide div { width: 600dp; height: 20dp; }
+        #agree { display: block; width: 16dp; height: 16dp; }
+        #step { display: block; width: 200dp; height: 16dp; }
+        #step slidertrack { background-color: #404040ff; }
+        #step sliderbar { width: 12dp; height: 16dp; background-color: #ffffffff; }
+    </style></head><body>
+        <div id='log'><p>1</p><p>2</p><p>3</p><p>4</p><p>5</p><p>6</p><p>7</p><p>8</p><p>9</p><p>10</p></div>
+        <div id='wide'><div>wide</div></div>
+        <input id='agree' type='checkbox' value='yes'/>
+        <div id='sliders'><input id='step' type='range' min='0' max='10' step='1' value='9'/></div>
+    </body></rml>";
+}
+
+// Twenty lines for the log, as markup.
+fn string twentyLines()
+{
+    string markup = "";
+    int32 n = 1;
+    while (n <= 20) {
+        markup = markup + "<p>${n}</p>";
+        n = n + 1;
+    }
+    return markup;
+}
+
+fn string valueOf(Element e)
+{
+    Optional<string> v = e.value();
+    return match (v) { case Some(value: x): copy x; case None: "<none>"; };
+}
+
+fn bool hasAttribute(Element e, const ref string name)
+{
+    Optional<string> a = e.attribute(name: name);
+    return match (a) { case Some(value: x): true; case None: false; };
 }
 
 fn void drain(ref Context ctx)
@@ -547,6 +599,167 @@ fn int32 main()
     Optional<Binding> whose = doc.bindingOf(element: focusedGo);
     Binding whoseB = match (whose) { case Some(value: b): b; case None: Binding.fromHandle(handle: 0); };
     check(t: t, ok: whoseB.same(other: goBinding), what: "the focused element maps back to its binding");
+
+    // ---- scrolling, quiet attribute writes, and a range's change only when its value changed ----
+    Result<Context, RmlUiError> madeControls = Context.create(ui: ui, name: "controls", width: 800, height: 600);
+    Context cc = match (madeControls) {
+        case Ok(value: c): c;
+        case Err(error: e): { println(s: "rmlui tests: no controls context"); return 1; }
+    };
+    cc.setDpRatio(ratio: 1.0);
+    string controlsRml = controls();
+    string controlsUrl = "tests/fixtures/controls.rml";
+    Optional<Document> loadedControls = cc.loadDocumentRml(rml: controlsRml, sourceUrl: controlsUrl);
+    Document cdoc = match (loadedControls) { case Some(value: d): d; case None: Document.fromHandle(handle: 0); };
+    check(t: t, ok: cdoc.isLive(), what: "the controls document loads");
+    cdoc.show(modal: Modal::None, focus: Focus::None);
+    cc.update();
+    check(t: t, ok: errorsLogged(ui: ui) == 0, what: "...with no error logged");
+
+    // Scrolling: sizes after the update, a clamped set, and a log kept on its newest line.
+    Element log = must(e: cdoc.byId(id: "log"), what: "log");
+    float32 sh = log.scrollHeight();
+    float32 ch = log.clientHeight();
+    float32 st = log.scrollTop();
+    check(t: t, ok: sh == 200.0 && ch == 100.0 && st == 0.0,
+          what: "a scrolling box measures ten 20px lines in a 100px box after the update (${sh} in ${ch}, at ${st})");
+    log.setScrollTop(top: 1000.0);
+    float32 clamped = log.scrollTop();
+    check(t: t, ok: clamped == 100.0, what: "setScrollTop clamps to scrollHeight - clientHeight (${clamped})");
+    log.setScrollTop(top: 30.0);
+    float32 middle = log.scrollTop();
+    check(t: t, ok: middle == 30.0, what: "...and lands inside the range where it is asked to (${middle})");
+    string lines = twentyLines();
+    log.setInnerRml(rml: lines);
+    float32 stale = log.scrollHeight();
+    check(t: t, ok: stale == 200.0, what: "before the update the sizes are still the last layout's (${stale})");
+    cc.update();
+    float32 grown = log.scrollHeight();
+    log.setScrollTop(top: grown);
+    float32 bottom = log.scrollTop();
+    float32 ch2 = log.clientHeight();
+    check(t: t, ok: grown == 400.0 && bottom == grown - ch2,
+          what: "after it, the log has grown and scrolling to scrollHeight lands on the newest line (${bottom} of ${grown})");
+    Element wide = must(e: cdoc.byId(id: "wide"), what: "wide");
+    float32 sw = wide.scrollWidth();
+    float32 cw = wide.clientWidth();
+    wide.setScrollLeft(left: 50.0);
+    float32 sl = wide.scrollLeft();
+    wide.setScrollLeft(left: 5000.0);
+    float32 slMax = wide.scrollLeft();
+    check(t: t, ok: sw == 600.0 && cw == 300.0 && sl == 50.0 && slMax == 300.0,
+          what: "...and the same across (${sw} in ${cw}; set 50 reads ${sl}, set 5000 reads ${slMax})");
+
+    // A quiet attribute write: RmlUi raises change for a write to `checked`; the quiet one queues nothing.
+    Element agree = must(e: cdoc.byId(id: "agree"), what: "agree");
+    Optional<Listener> onAgree = agree.listen(event: "change", flags: LISTEN_BUBBLE);
+    string checkedAttr = "checked";
+    string noText = "";
+    drain(ctx: cc);
+    agree.setAttribute(name: checkedAttr, value: noText);
+    Seen loudCheck = collect(ctx: cc);
+    check(t: t, ok: loudCheck.changes == 1 && hasAttribute(e: agree, name: checkedAttr),
+          what: "setAttribute checks a checkbox, and RmlUi raises change for it (${loudCheck.changes})");
+    agree.removeAttribute(name: checkedAttr);
+    Seen loudUncheck = collect(ctx: cc);
+    check(t: t, ok: loudUncheck.changes == 1, what: "...and for removeAttribute (${loudUncheck.changes})");
+    agree.setAttributeQuietly(name: checkedAttr, value: noText);
+    Seen quietCheck = collect(ctx: cc);
+    check(t: t, ok: quietCheck.count == 0 && hasAttribute(e: agree, name: checkedAttr),
+          what: "setAttributeQuietly checks it and queues nothing (${quietCheck.count})");
+    agree.removeAttributeQuietly(name: checkedAttr);
+    Seen quietUncheck = collect(ctx: cc);
+    check(t: t, ok: quietUncheck.count == 0 && !hasAttribute(e: agree, name: checkedAttr),
+          what: "removeAttributeQuietly unchecks it and queues nothing (${quietUncheck.count})");
+    agree.click();
+    Seen clicked = collect(ctx: cc);
+    check(t: t, ok: clicked.changes == 1 && hasAttribute(e: agree, name: checkedAttr),
+          what: "a click still checks it with one change (${clicked.changes})");
+
+    // A range raises change only when its value changed: heard on the range and on its container, so one real change
+    // is two events and a dropped one is none.
+    Element stepper = must(e: cdoc.byId(id: "step"), what: "step");
+    Element sliders = must(e: cdoc.byId(id: "sliders"), what: "sliders");
+    Optional<Listener> onStep = stepper.listen(event: "change", flags: LISTEN_BUBBLE);
+    Optional<Listener> onSliders = sliders.listen(event: "change", flags: LISTEN_BUBBLE);
+    string valueAttr = "value";
+    string three = "3";
+    stepper.setAttributeQuietly(name: valueAttr, value: three);
+    Seen quietRangeAttr = collect(ctx: cc);
+    string atThree = valueOf(e: stepper);
+    check(t: t, ok: quietRangeAttr.count == 0 && atThree.startsWith(prefix: "3"),
+          what: "a quiet write of a range's value attribute moves it and queues nothing ('${atThree}')");
+    string nine = "9";
+    stepper.setAttribute(name: valueAttr, value: nine);
+    Seen loudRangeAttr = collect(ctx: cc);
+    check(t: t, ok: loudRangeAttr.changes == 2, what: "a loud one is a real change, kept (${loudRangeAttr.changes})");
+    check(t: t, ok: stepper.focus(visible: true), what: "the range takes focus");
+    drain(ctx: cc);
+    press(ctx: cc, key: KEY_RIGHT);
+    Seen up = collect(ctx: cc);
+    string atTen = valueOf(e: stepper);
+    check(t: t, ok: up.changes == 2 && atTen.startsWith(prefix: "10"),
+          what: "RIGHT moves the range one step: one change, on it and its container (${up.changes}, '${atTen}')");
+    press(ctx: cc, key: KEY_RIGHT);
+    press(ctx: cc, key: KEY_RIGHT);
+    Seen past = collect(ctx: cc);
+    string stillTen = valueOf(e: stepper);
+    check(t: t, ok: past.changes == 0 && stillTen.startsWith(prefix: "10"),
+          what: "steps past the end change nothing and queue nothing (${past.changes})");
+    press(ctx: cc, key: KEY_LEFT);
+    Seen back = collect(ctx: cc);
+    check(t: t, ok: back.changes == 2, what: "LEFT moves it back: a change again (${back.changes})");
+    string zero = "0";
+    stepper.setValue(value: zero, quiet: true);
+    drain(ctx: cc);
+    press(ctx: cc, key: KEY_LEFT);
+    Seen belowMin = collect(ctx: cc);
+    check(t: t, ok: belowMin.changes == 0, what: "...and a step past the lower end queues nothing (${belowMin.changes})");
+
+    // The pointer: a press at the bar and a drag within one step change nothing; each step a drag crosses is a change,
+    // so a slider previews live. One step is (200 - 12) / 10 = 18.8 pixels of the track.
+    string five = "5";
+    stepper.setValue(value: five, quiet: true);
+    cc.update();
+    drain(ctx: cc);
+    Rect stepBox = stepper.rect(area: BoxArea::Content);
+    float32 mx = stepBox.centerX();
+    float32 my = stepBox.centerY();
+    cc.mouseMove(x: mx, y: my, mods: MOD_NONE);
+    cc.mouseButton(button: 0, down: true, mods: MOD_NONE);
+    cc.mouseMove(x: mx + 3.0, y: my, mods: MOD_NONE);
+    cc.mouseMove(x: mx + 6.0, y: my, mods: MOD_NONE);
+    cc.update();
+    Seen within = collect(ctx: cc);
+    string stillFive = valueOf(e: stepper);
+    check(t: t, ok: within.changes == 0 && stillFive.startsWith(prefix: "5"),
+          what: "a press at the bar and a drag within one step queue nothing (${within.changes}, '${stillFive}')");
+    cc.mouseMove(x: mx + 20.0, y: my, mods: MOD_NONE);
+    cc.update();
+    Seen oneStep = collect(ctx: cc);
+    string atSix = valueOf(e: stepper);
+    check(t: t, ok: oneStep.changes == 2 && atSix.startsWith(prefix: "6"),
+          what: "a drag across one step is one change (${oneStep.changes}, '${atSix}')");
+    cc.mouseMove(x: mx + 22.0, y: my, mods: MOD_NONE);
+    cc.mouseMove(x: mx + 39.0, y: my, mods: MOD_NONE);
+    cc.mouseMove(x: mx + 58.0, y: my, mods: MOD_NONE);
+    cc.update();
+    Seen twoSteps = collect(ctx: cc);
+    string atEight = valueOf(e: stepper);
+    check(t: t, ok: twoSteps.changes == 4 && atEight.startsWith(prefix: "8"),
+          what: "...and moving on across two more is two more, live (${twoSteps.changes}, '${atEight}')");
+    cc.mouseButton(button: 0, down: false, mods: MOD_NONE);
+    cc.update();
+    Seen released = collect(ctx: cc);
+    check(t: t, ok: released.changes == 0, what: "releasing the bar queues nothing (${released.changes})");
+
+    cc.destroy();
+    log.setScrollTop(top: 10.0);
+    float32 deadTop = log.scrollTop();
+    float32 deadHeight = log.scrollHeight();
+    float32 deadClient = log.clientHeight();
+    check(t: t, ok: !log.isLive() && deadTop == 0.0 && deadHeight == 0.0 && deadClient == 0.0,
+          what: "a dead element scrolls nowhere and measures 0");
 
     // ---- a second context is independent ----
     Result<Context, RmlUiError> madeSide = Context.create(ui: ui, name: "side", width: 320, height: 200);

@@ -1,7 +1,7 @@
 // kama_rmlui.cpp — RmlUi 6.3, recording rather than drawing. Read kama_rmlui.h first: it carries the design.
 //
-// From the-mallow-man's ui/src/tmm_ui_native.cpp (E7b/E7c, 2026-10-07), itself from friendly-fire-department@a676ca3's
-// ffd_ui_native.cpp. What changed on the way from a game's shim to a general binding:
+// Grown from the UI shim two games had built for their menus (one copied from the other, then extended). What changed
+// on the way from a game's shim to a general binding:
 //   - Contexts are a handle table, not one file-static context; documents are any number per context.
 //   - Elements are handles for ANY element, tracked by RmlUi's ObserverPtr (dead, never dangling), instead of a
 //     bind-by-id table repaired by a write counter. The games' `bind` (id -> stable handle) is @kama/ui's policy now.
@@ -17,7 +17,7 @@
 
 // ⚠️ RMLUI IS COMPILED INTO THE PROGRAM, STATIC ON EVERY PLATFORM (the wrappers in csrc/rmlui/), so RmlUi's headers
 // must be told so before they are read: on Windows every call is otherwise a `__declspec(dllimport)` and the link
-// fails on `__imp__ZN3Rml…` (friendly-fire-department). The wrappers define it the same way
+// fails on `__imp__ZN3Rml…` (as a game's Windows build did). The wrappers define it the same way
 // (csrc/rmlui/kama_rmlui_build.h). Defined here rather than as a manifest flag, because a dependency's `cflags` reach
 // every translation unit of the consumer's build.
 #ifndef RMLUI_STATIC_LIB
@@ -204,7 +204,7 @@ struct Texture {
     int32_t              width = 0;
     int32_t              height = 0;
     // ⚠️ BUMPED EVERY TIME A SLOT IS FILLED — the only reliable way to see a recycled one (kama_rmlui.h, "textures").
-    // Comparing (width, height, data) missed roughly half the recycles in a real run of the-mallow-man.
+    // Comparing (width, height, data) missed roughly half the recycles in a real run of a game.
     int32_t              generation = 0;
 };
 
@@ -277,8 +277,35 @@ int32_t                 g_context_counter = 0;
 // ⚠️ SET BEFORE `Rml::Shutdown()`. Tearing RmlUi down releases every texture and listener, which is normal and must be
 // quiet; a release at any OTHER time is what the provided-image warning in ReleaseTexture is for.
 bool                    g_shutting_down = false;
-// Set while a setter writes a form control's value with `quiet`, so the Change RmlUi raises for it is not queued.
+// Set while a setter writes a form control's value or an attribute with `quiet`, so the Change RmlUi raises for it is
+// not queued.
 bool                    g_quiet_change = false;
+// Set while one of the shim's own writes runs (a value or an attribute). A range's Change raised inside one is a real
+// change even though its value already equals the `value` attribute: the write set the attribute first, and RmlUi's
+// slider followed it (unchangedRangeChange below).
+bool                    g_script_write = false;
+
+// Every value and attribute write goes through one of these: it marks the write as the program's own, and quiet when
+// asked, for exactly as long as RmlUi runs the write (a write raises its Change synchronously, inside the call).
+class ScriptWrite {
+public:
+    explicit ScriptWrite(bool quiet) : was_quiet_(g_quiet_change), was_script_(g_script_write)
+    {
+        if (quiet) { g_quiet_change = true; }
+        g_script_write = true;
+    }
+    ~ScriptWrite()
+    {
+        g_quiet_change = was_quiet_;
+        g_script_write = was_script_;
+    }
+    ScriptWrite(const ScriptWrite&) = delete;
+    ScriptWrite& operator=(const ScriptWrite&) = delete;
+
+private:
+    bool was_quiet_;
+    bool was_script_;
+};
 
 // The context being rendered (RenderGeometry & co. only happen inside Context::Render), and the render state RmlUi
 // sets as MODES — EnableScissorRegion / SetScissorRegion / SetTransform apply to every draw after them — tracked here
@@ -626,6 +653,28 @@ public:
     double elapsed = 0.0;
 };
 
+// ⚠️ RmlUi's slider (WidgetSlider::SetValueInternal) FORCES a Change on every movement, so a step past either end or
+// a drag within one step raises one carrying the value it already had. A browser raises none for those. The slider
+// dispatches the Change BEFORE it writes a new value to the range's `value` attribute, and writes it only when the
+// value changed, so during the dispatch the attribute still holds the value from before the movement: a Change whose
+// value equals it changed nothing. The comparison is RmlUi's own (`value != GetAttribute("value", 0.0f)`, the same
+// float conversion), and it reads only the event and its target, so every listener of one dispatch (a range's and its
+// container's) decides alike. A write of the program's own sets the attribute FIRST and the slider follows it, so
+// inside one (g_script_write) the comparison would lie: those are kept, as real changes.
+bool unchangedRangeChange(const Rml::Event& event)
+{
+    if (g_script_write || event.GetId() != Rml::EventId::Change) { return false; }
+    Rml::Element* target = event.GetTargetElement();
+    if (target == nullptr || target->GetTagName() != "input" ||
+        target->GetAttribute<Rml::String>("type", "") != "range") {
+        return false;
+    }
+    const Rml::Dictionary& params = event.GetParameters();
+    auto it = params.find("value");
+    if (it == params.end()) { return false; }
+    return it->second.Get<float>(0.0f) == target->GetAttribute("value", 0.0f);
+}
+
 // One instance per (element, event, phase): it captures no kama state and calls nothing in kama — it appends to the
 // queue `kama_rmlui_poll_event` drains.
 class QueueingListener final : public Rml::EventListener {
@@ -641,6 +690,7 @@ public:
     void ProcessEvent(Rml::Event& event) override
     {
         if (g_quiet_change && event.GetId() == Rml::EventId::Change) { return; }
+        if (unchangedRangeChange(event)) { return; }
         ContextRec* c = contextAt(context);
         if (c == nullptr) { return; }
         QueuedEvent q;
@@ -1172,18 +1222,44 @@ extern "C" void kama_rmlui_element_set_text(int32_t element, const char* text)
     e->SetInnerRML(Rml::StringUtilities::EncodeRml(text));
 }
 
-extern "C" void kama_rmlui_element_set_attribute(int32_t element, const char* name, const char* value)
+namespace {
+
+void setAttribute(int32_t element, const char* name, const char* value, bool quiet)
 {
     Rml::Element* e = elementAt(element);
     if (e == nullptr || name == nullptr || value == nullptr) { return; }
+    ScriptWrite write(quiet);
     e->SetAttribute(name, Rml::String(value));
+}
+
+void removeAttribute(int32_t element, const char* name, bool quiet)
+{
+    Rml::Element* e = elementAt(element);
+    if (e == nullptr || name == nullptr) { return; }
+    ScriptWrite write(quiet);
+    e->RemoveAttribute(name);
+}
+
+} // namespace
+
+extern "C" void kama_rmlui_element_set_attribute(int32_t element, const char* name, const char* value)
+{
+    setAttribute(element, name, value, false);
 }
 
 extern "C" void kama_rmlui_element_remove_attribute(int32_t element, const char* name)
 {
-    Rml::Element* e = elementAt(element);
-    if (e == nullptr || name == nullptr) { return; }
-    e->RemoveAttribute(name);
+    removeAttribute(element, name, false);
+}
+
+extern "C" void kama_rmlui_element_set_attribute_quiet(int32_t element, const char* name, const char* value)
+{
+    setAttribute(element, name, value, true);
+}
+
+extern "C" void kama_rmlui_element_remove_attribute_quiet(int32_t element, const char* name)
+{
+    removeAttribute(element, name, true);
 }
 
 extern "C" int32_t kama_rmlui_element_has_class(int32_t element, const char* name)
@@ -1215,10 +1291,8 @@ extern "C" int32_t kama_rmlui_element_set_value(int32_t element, const char* val
 {
     Rml::ElementFormControl* c = controlAt(element);
     if (c == nullptr || value == nullptr) { return 0; }
-    const bool was = g_quiet_change;
-    if (quiet != 0) { g_quiet_change = true; }
+    ScriptWrite write(quiet != 0);
     c->SetValue(value);
-    g_quiet_change = was;
     return 1;
 }
 
@@ -1268,6 +1342,55 @@ extern "C" void kama_rmlui_element_scroll_into_view(int32_t element)
 {
     Rml::Element* e = elementAt(element);
     if (e != nullptr) { e->ScrollIntoView(true); }
+}
+
+// Scrolling: RmlUi's own Element accessors, which read the last layout (none of them lays out). The setters clamp.
+extern "C" float kama_rmlui_element_scroll_top(int32_t element)
+{
+    Rml::Element* e = elementAt(element);
+    return (e != nullptr) ? e->GetScrollTop() : 0.0f;
+}
+
+extern "C" void kama_rmlui_element_set_scroll_top(int32_t element, float top)
+{
+    Rml::Element* e = elementAt(element);
+    if (e != nullptr) { e->SetScrollTop(top); }
+}
+
+extern "C" float kama_rmlui_element_scroll_left(int32_t element)
+{
+    Rml::Element* e = elementAt(element);
+    return (e != nullptr) ? e->GetScrollLeft() : 0.0f;
+}
+
+extern "C" void kama_rmlui_element_set_scroll_left(int32_t element, float left)
+{
+    Rml::Element* e = elementAt(element);
+    if (e != nullptr) { e->SetScrollLeft(left); }
+}
+
+extern "C" float kama_rmlui_element_scroll_height(int32_t element)
+{
+    Rml::Element* e = elementAt(element);
+    return (e != nullptr) ? e->GetScrollHeight() : 0.0f;
+}
+
+extern "C" float kama_rmlui_element_scroll_width(int32_t element)
+{
+    Rml::Element* e = elementAt(element);
+    return (e != nullptr) ? e->GetScrollWidth() : 0.0f;
+}
+
+extern "C" float kama_rmlui_element_client_height(int32_t element)
+{
+    Rml::Element* e = elementAt(element);
+    return (e != nullptr) ? e->GetClientHeight() : 0.0f;
+}
+
+extern "C" float kama_rmlui_element_client_width(int32_t element)
+{
+    Rml::Element* e = elementAt(element);
+    return (e != nullptr) ? e->GetClientWidth() : 0.0f;
 }
 
 extern "C" int32_t kama_rmlui_encode_rml(const char* text)

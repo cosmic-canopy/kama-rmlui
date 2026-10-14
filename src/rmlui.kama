@@ -8,7 +8,7 @@ file @compileFor(!ARCH_WASM32);
 //   Context      one UI surface: size, input, update, render, the recorded commands, its event queue; destroy it
 //   Document     a loaded document: show, hide, close, find elements, tab order, bindings
 //   Element      any element: tag, id, attributes, classes, inline properties, inner RML, text, a form control's
-//                value, its box, focus, click, listeners
+//                value, its box, scrolling, focus, click, listeners
 //   Binding      an id held across rewrites: the same handle for (document, id), re-finding its element and carrying
 //                its listeners to it
 //   Event        one queued event: the listener (and binding) that heard it, its type, the element, the target
@@ -95,6 +95,8 @@ extern fn void  kama_rmlui_element_set_inner_rml(int32 element, UnsafeConstPtr<c
 extern fn void  kama_rmlui_element_set_text(int32 element, UnsafeConstPtr<cchar> text);
 extern fn void  kama_rmlui_element_set_attribute(int32 element, UnsafeConstPtr<cchar> name, UnsafeConstPtr<cchar> value);
 extern fn void  kama_rmlui_element_remove_attribute(int32 element, UnsafeConstPtr<cchar> name);
+extern fn void  kama_rmlui_element_set_attribute_quiet(int32 element, UnsafeConstPtr<cchar> name, UnsafeConstPtr<cchar> value);
+extern fn void  kama_rmlui_element_remove_attribute_quiet(int32 element, UnsafeConstPtr<cchar> name);
 extern fn int32 kama_rmlui_element_has_class(int32 element, UnsafeConstPtr<cchar> name);
 extern fn void  kama_rmlui_element_set_class(int32 element, UnsafeConstPtr<cchar> name, int32 on);
 extern fn int32 kama_rmlui_element_set_property(int32 element, UnsafeConstPtr<cchar> name, UnsafeConstPtr<cchar> value);
@@ -106,6 +108,14 @@ extern fn int32 kama_rmlui_element_focus(int32 element, int32 visible);
 extern fn void  kama_rmlui_element_blur(int32 element);
 extern fn void  kama_rmlui_element_click(int32 element);
 extern fn void  kama_rmlui_element_scroll_into_view(int32 element);
+extern fn float32 kama_rmlui_element_scroll_top(int32 element);
+extern fn void  kama_rmlui_element_set_scroll_top(int32 element, float32 top);
+extern fn float32 kama_rmlui_element_scroll_left(int32 element);
+extern fn void  kama_rmlui_element_set_scroll_left(int32 element, float32 left);
+extern fn float32 kama_rmlui_element_scroll_height(int32 element);
+extern fn float32 kama_rmlui_element_scroll_width(int32 element);
+extern fn float32 kama_rmlui_element_client_height(int32 element);
+extern fn float32 kama_rmlui_element_client_width(int32 element);
 extern fn int32 kama_rmlui_encode_rml(UnsafeConstPtr<cchar> text);
 
 extern fn int32 kama_rmlui_listen(int32 element, UnsafeConstPtr<cchar> event, int32 flags);
@@ -963,6 +973,19 @@ type value Element {
         kama_rmlui_element_remove_attribute(element: this.hid, name: name.cstr());
     }
 
+    // The same two writes, quietly: no `change` they make RmlUi raise is queued. RmlUi raises one for a write to a
+    // control's attribute (a checkbox's `checked`, a range's `value`); a browser raises none for a script's write. So
+    // state a program mirrors into its controls is written quietly, and only a person's edit reaches the queue.
+    public unsafe fn void setAttributeQuietly(const ref string name, const ref string value)
+    {
+        kama_rmlui_element_set_attribute_quiet(element: this.hid, name: name.cstr(), value: value.cstr());
+    }
+
+    public unsafe fn void removeAttributeQuietly(const ref string name)
+    {
+        kama_rmlui_element_remove_attribute_quiet(element: this.hid, name: name.cstr());
+    }
+
     public unsafe const fn bool hasClass(const ref string name)
     {
         return kama_rmlui_element_has_class(element: this.hid, name: name.cstr()) != 0;
@@ -1029,6 +1052,21 @@ type value Element {
     public unsafe fn void click() { kama_rmlui_element_click(element: this.hid); }
     public unsafe fn void scrollIntoView() { kama_rmlui_element_scroll_into_view(element: this.hid); }
 
+    // Scrolling, as the DOM names it, in framebuffer pixels: the offset (`scrollTop`, `scrollLeft`), the scrollable
+    // content with its padding (`scrollHeight`, `scrollWidth`, never less than the client size), and the padding box
+    // less any scrollbar (`clientHeight`, `clientWidth`). `scrollTop() == scrollHeight() - clientHeight()` is "at the
+    // bottom". ⚠️ The sizes are the LAST LAYOUT's, valid after the context's `update()`: a line written since is not
+    // in them, and a set clamps against them (0..scrollHeight - clientHeight, whole pixels). So to keep a log on its
+    // newest line: write it, `update()`, then `setScrollTop(top: log.scrollHeight())`. A dead element reads 0.
+    public unsafe const fn float32 scrollTop() { return kama_rmlui_element_scroll_top(element: this.hid); }
+    public unsafe fn void setScrollTop(float32 top) { kama_rmlui_element_set_scroll_top(element: this.hid, top: top); }
+    public unsafe const fn float32 scrollLeft() { return kama_rmlui_element_scroll_left(element: this.hid); }
+    public unsafe fn void setScrollLeft(float32 left) { kama_rmlui_element_set_scroll_left(element: this.hid, left: left); }
+    public unsafe const fn float32 scrollHeight() { return kama_rmlui_element_scroll_height(element: this.hid); }
+    public unsafe const fn float32 scrollWidth() { return kama_rmlui_element_scroll_width(element: this.hid); }
+    public unsafe const fn float32 clientHeight() { return kama_rmlui_element_client_height(element: this.hid); }
+    public unsafe const fn float32 clientWidth() { return kama_rmlui_element_client_width(element: this.hid); }
+
     // The deepest focused element at or under this one.
     public unsafe const fn Optional<Element> focusLeaf()
     {
@@ -1038,7 +1076,8 @@ type value Element {
 
     // Listen for an event ("click", "change", "keydown", a custom name) here. `flags`: LISTEN_BUBBLE, or an OR of
     // LISTEN_CAPTURE and LISTEN_STOP. ⚠️ RmlUi bubbles: a listener on a container hears its children's events too, so
-    // one click on a button inside it is two events with one target. None for a dead element.
+    // one click on a button inside it is two events with one target. A range's `change` is queued only when its value
+    // changed (RmlUi raises one on every movement, a step past an end included). None for a dead element.
     public unsafe fn Optional<Listener> listen(const ref string event, int32 flags)
     {
         int32 h = kama_rmlui_listen(element: this.hid, event: event.cstr(), flags: flags);

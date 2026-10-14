@@ -1,6 +1,6 @@
 # Gaps found in kama, from building @kama/rmlui
 
-Found while lifting the RmlUi binding out of the-mallow-man and friendly-fire-department (2026-10-13), and while
+Found while lifting the RmlUi binding out of two games' UI shims (2026-10-13), and while
 vendoring RmlUi for 0.1.0 (the same day). Each was run on the version named. Each gap asks **Open: language, std or
 package?** (here mostly the toolchain's manifest).
 

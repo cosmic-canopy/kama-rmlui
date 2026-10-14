@@ -1,4 +1,4 @@
-# The licence texts a program linking @kama/rmlui carries, after friendly-fire-department's licenses/manifest.tsv.
+# The licence texts a program linking @kama/rmlui carries.
 #
 # COLUMNS, tab-separated
 #   key       an identifier for a consumer's own manifest or credits check
@@ -9,8 +9,8 @@
 #             (tools/vendor-rmlui.sh copies them byte for byte), never fetched at packaging time.
 #   screen    the name a credits screen shows
 #
-# ⚠️ RmlUi VENDORS TWO CONTAINER LIBRARIES AND ITS LICENSE.txt DOES NOT COVER THEM. friendly-fire-department's FR-28
-# found 472 robin_hood + itlib symbols in a shipped binary against a notice that named neither. Their text is RmlUi's
+# ⚠️ RmlUi VENDORS TWO CONTAINER LIBRARIES AND ITS LICENSE.txt DOES NOT COVER THEM. A licence audit of a shipped game
+# found 472 robin_hood + itlib symbols in its binary against a notice that named neither. Their text is RmlUi's
 # Include/RmlUi/Core/Containers/LICENSE.txt, a separate row because they are separate copyright holders.
 #
 # ⚠️ FreeType is not in this list: it is @kama/freetype's, a dependency, and its own licenses/manifest.tsv lists its
