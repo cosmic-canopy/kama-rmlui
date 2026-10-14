@@ -21,7 +21,7 @@ RmlUi is vendored (`third_party/rmlui`) and compiled by kama into your program. 
 and no `-L` path to set.
 
 ```json
-"dependencies": { "@kama/rmlui": { "version": "^0.1.1" } }
+"dependencies": { "@kama/rmlui": { "version": "^0.2.0" } }
 ```
 
 To build against a checkout instead (working on the package itself), override it in your gitignored
@@ -95,10 +95,10 @@ fn void demo() {
 
 | type | what |
 |---|---|
-| `RmlUi` | The library: `start` / `shutdown` (reference counted). Also `loadFontFace`, `loadFontFaceBytes`, `provideImage`, `setTime`, `pollLog` / `setLogEcho`, `textureCount` / `texture`, and the last event's `eventName` / `eventInt` / `eventFloat` / `eventString`. |
+| `RmlUi` | The library: `start` / `shutdown` (reference counted). Also `loadFontFace`, `loadFontFaceBytes`, `provideImage`, `setTime`, `pollLog` / `setLogEcho`, `textureCount` / `texture`, the last event's `eventName` / `eventInt` / `eventFloat` / `eventString` / `eventElement` / `eventModifiers`, and the clipboard: `provideClipboard`, `copyText`, `takeClipboardWrite`. |
 | `Context` | One surface in framebuffer pixels: `create` / `destroy`, `setDimensions`, `setDpRatio`, `update`, `render`, `commandCount` / `command`. Input: `mouseMove`, `mouseButton`, `mouseWheel`, `mouseLeave`, `key`, `text`, `textUtf8`; each returns **true when the UI consumed it**. Also `loadDocument` / `loadDocumentRml`, `focusElement` / `hoverElement` / `elementAtPoint`, `pollEvent`, `clearEvents`. |
 | `Document` | `show(modal:, focus:)`, `hide`, `close`, `title`, `byId`, `query`, `focused` (None when nothing in it is), `nextTab`, `bind`, `bindingOf`, `root`. |
-| `Element` | Reading: `tag`, `id`, `attribute`, `hasClass`, `property` (computed), `value` (form controls), `innerRml`, `text`, `rect(area:)`, `isVisible`, `parent` / `childCount` / `child`, `byId` / `query`. Writing: `setInnerRml`, `setText` (escaped), `setAttribute` / `removeAttribute`, `setAttributeQuietly` / `removeAttributeQuietly`, `setClass`, `setProperty` / `removeProperty` (inline style), `setValue(value:, quiet:)`. Scrolling: `scrollTop` / `setScrollTop(top:)`, `scrollLeft` / `setScrollLeft(left:)`, `scrollHeight`, `scrollWidth`, `clientHeight`, `clientWidth`. Actions: `focus`, `blur`, `click`, `scrollIntoView`, `listen(event:, flags:)`. |
+| `Element` | Reading: `tag`, `id`, `attribute`, `hasClass`, `property` (computed), `value` (form controls), `innerRml`, `text`, `rect(area:)`, `isVisible`, `parent` / `childCount` / `child`, `byId` / `query`. Writing: `setInnerRml`, `appendRml`, `setText` (escaped), `removeChildren(from:, count:)`, `remove`, `setAttribute` / `removeAttribute`, `setAttributeQuietly` / `removeAttributeQuietly`, `setClass`, `setProperty` / `removeProperty` (inline style), `setValue(value:, quiet:)`. Scrolling: `scrollTop` / `setScrollTop(top:)`, `scrollLeft` / `setScrollLeft(left:)`, `scrollHeight`, `scrollWidth`, `clientHeight`, `clientWidth`. Actions: `focus`, `blur`, `click`, `scrollIntoView`, `listen(event:, flags:)`. |
 | `Binding` | An id held across rewrites: `element`, `listen`, `id` (see below). |
 | `Event` | `listener`, `binding`, `type` (`EventType`), `element` (where it was heard), `target` (where it happened). |
 | `Command`, `Texture`, `Vertex`, `Rect` | The recording: `kind` (`Draw`, `ClipEnable`, `ClipDisable`, `ClipSet`, `ClipSetInverse`, `ClipIntersect`), raw pointers for an upload plus bounds-checked `vertex(i)` / `index(i)` / `byteAt(i)`. |
@@ -144,6 +144,42 @@ fn void demo() {
   `update()`, and `setScrollTop` / `setScrollLeft` clamp against them (to `0..scrollHeight - clientHeight`, whole
   pixels). To keep a log on its newest line: write the line, `update()`, then `setScrollTop(top: log.scrollHeight())`.
   A change of offset raises `scroll`.
+- **`appendRml` appends; `removeChildren` and `remove` remove.** An append parses only the new markup, after the
+  existing children, which keep their handles, listeners and bindings; the scroll offset stays. A log appends its new
+  line and drops its oldest with `removeChildren(from: 0, count: n)`. Removed elements are destroyed, so their handles
+  go dead. A document is closed, never removed, and the context's root (a document's `parent`) takes neither.
+- **A `<select>`'s children are its options**, as in a browser, although RmlUi keeps them out of the DOM in its
+  drop-down. `childCount`, `child`, `appendRml`, `removeChildren`, `setInnerRml` and `setText` all work on them.
+  Natively, a plain `SetInnerRML` kept the old options and the old value; here a rebuild replaces them. It also settles
+  the value at once (the option marked `selected`, else the first), and it queues no `change`, as in a browser. A click on an option is a person's choice and raises one.
+- **The clipboard is pulled.** RmlUi's text fields copy, cut, paste and select all on Ctrl+C, X, V and A.
+  - A paste reads what `provideClipboard(text:)` last handed over. Provide the OS clipboard's text before injecting
+    the keys that paste (on seeing Ctrl/Cmd+V, or every frame).
+  - A copy or cut, and `copyText(text:)` (a Copy button), sets that text and queues it. `takeClipboardWrite()` pops
+    each queued write for the program to put on the OS clipboard.
+  - With no OS clipboard at all, copy and paste still work inside the program.
+  - RmlUi's fields look only at Ctrl, so on macOS inject Cmd as `MOD_CTRL` for these keys.
+- **Drag and drop is RmlUi's, driven by RCSS.** Give a draggable element `drag: drag-drop` (it stays put) or
+  `drag: clone` (a copy follows the pointer). A primary press on it, or on anything inside it, then a move, starts the
+  drag. It raises `dragstart` and `dragend` on itself. The element under the pointer gets `dragover`, `dragout` and,
+  on release, `dragdrop`. The dragged element is never that target.
+  - The events bubble, so one `dragdrop` listener on a list hears a drop on any row. `Event.target` is the row (or
+    the deepest element under the pointer). `ui.eventElement(name: "drag_element")` is the row that was dragged.
+    That element is held as a handle, so it reads None, never freed memory, if it is gone before the poll.
+  - `drag: drag` raises no drop events. `drag: block` stops a press inside from dragging an ancestor.
+- **Keys carry their identifier and modifiers.** On a keydown, `ui.eventInt(name: "key_identifier", fallback: -1)` is
+  a `KEY_*`. `ui.eventModifiers()` is the `MOD_*` mask, also on mouse events. Each modifier is also readable alone:
+  `ctrl_key`, `shift_key`, `alt_key` and `meta_key` are 0 or 1.
+- **A double click follows RmlUi's clock.** Two presses on one element within 0.5 s of `setTime` and 3 dp of each
+  other raise `dblclick`, on the second press. Advance the clock every frame. A clock that never moves makes every
+  second press a double click.
+- **Tooltips: RmlUi has none, and nothing more is needed to build one.**
+  - `mouseover` and `mouseout` bubble, so one listener on the document's root hears them all, with their `target`.
+  - The `title` attribute, plus the event's `mouse_x` and `mouse_y`, say what to show and where.
+  - Show it in an element styled `position: absolute; pointer-events: none;`: place it with
+    `setProperty(name: "left" / "top", …)` and show it with `display`. `pointer-events: none` keeps the hover, and
+    `elementAtPoint`, on the element underneath.
+  - Lay out (`update()`) before reading a box after a change that moves things.
 - **Provided images.**
   - The shim opens no image files. You decode the image and hand over premultiplied RGBA8 under the name RmlUi
     resolves the `src` to: a leading `/` is stripped, and any other path is joined onto the document's directory.
@@ -224,7 +260,7 @@ The test font (Lato, SIL OFL 1.1, `tests/fonts/`) is never part of a program, an
 KAMA=/path/to/kama tools/test.sh      # tests/: debug, release, and debug under AddressSanitizer (Linux)
 ```
 
-`tests/` is one headless program, **116 checks**. It passes in debug, in release, and under AddressSanitizer with leak
+`tests/` is one headless program, **162 checks**. It passes in debug, in release, and under AddressSanitizer with leak
 checking. The ASan leg wraps `cc`/`c++` with `-fsanitize=address`, so RmlUi, FreeType and the shim are all
 instrumented. Its font is Lato, committed under `tests/fonts/` with its OFL text. It covers:
 
@@ -249,6 +285,20 @@ instrumented. Its font is Lato, committed under `tests/fonts/` with its OFL text
   each, steps past both ends, a press at the bar, a drag within one step, and a drag across steps (one change a step).
 - Scrolling: a log's sizes after the update and still stale before it, a clamped `setScrollTop`, a log kept on its
   newest line, the same across with `setScrollLeft`, and a dead element reading 0.
+- `appendRml` adding lines after the old ones, with their handles, listener, binding and the scroll offset intact
+  (before and after the update). Whitespace adding nothing, and bare text becoming one decoded text node.
+- `removeChildren` dropping the oldest lines, clamped at the end, refusing a range wholly outside. `remove` on an
+  element, refused for a document. The context's root refusing both.
+- A select's options as its children. A rebuild by `setInnerRml`, `appendRml`, `removeChildren` and `remove` settling
+  its value at once and queuing no change, at the write or at the update. A click on an option raising one.
+- The clipboard: Ctrl+A then Ctrl+C queuing a write once, Ctrl+V pasting the provided text, Ctrl+X queuing and
+  emptying, and `copyText` queuing a write that a later paste reads.
+- A keydown's identifier and modifiers (mask and parameters), a click's modifiers, focus and blur events, and a
+  `dblclick` at 0.2 s but not at 1 s.
+- **A drag and drop by injected pointer input**: `dragstart` and `dragend` on the dragged row, and one `dragdrop`
+  heard on the list with the target row and the `drag_element`. A dragged row removed before the poll reading None.
+- A tooltip's parts: one `mouseover` on the titled element with its position, a `pointer-events: none` element laid
+  out at the pointer without taking the hover, and one `mouseout` on leaving.
 - Text, markup, attributes, classes and inline properties read back after writing.
 - **A child handle going dead, not dangling, after a rewrite.** A binding keeping its handle across that rewrite and
   carrying its listener to the new element.

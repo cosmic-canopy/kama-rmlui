@@ -36,6 +36,13 @@ import {
     rmlui::KEY_DOWN,
     rmlui::KEY_LEFT,
     rmlui::KEY_RIGHT,
+    rmlui::KEY_A,
+    rmlui::KEY_C,
+    rmlui::KEY_V,
+    rmlui::KEY_X,
+    rmlui::MOD_CTRL,
+    rmlui::MOD_SHIFT,
+    rmlui::MOD_ALT,
     rmlui::KEY_HOME,
     rmlui::KEY_DELETE,
     rmlui::MOD_NONE,
@@ -120,6 +127,171 @@ fn string controls()
         <input id='agree' type='checkbox' value='yes'/>
         <div id='sliders'><input id='step' type='range' min='0' max='10' step='1' value='9'/></div>
     </body></rml>";
+}
+
+// A third screen, in a context of its own: a log that is appended to and trimmed, rows that drag and drop, a text
+// field, two selects (one with an option marked selected, one without), and an element with a title beside the
+// element a tooltip is built from.
+fn string lists()
+{
+    return "<rml><head><title>Lists</title><style>
+        body { font-family: LatoLatin; font-size: 20dp; color: #ffffff; width: 100%; height: 100%; }
+        div, p { display: block; }
+        #feed { width: 300dp; height: 100dp; overflow-y: auto; }
+        #feed p { height: 20dp; line-height: 20dp; }
+        scrollbarvertical { width: 10dp; }
+        scrollbarvertical slidertrack { background-color: #404040ff; }
+        scrollbarvertical sliderbar { background-color: #ffffffff; }
+        #rows { width: 300dp; }
+        .row { height: 30dp; drag: drag-drop; background-color: #304060ff; }
+        input { display: block; width: 300dp; height: 30dp; }
+        select { display: block; width: 200dp; height: 24dp; }
+        #help { width: 100dp; height: 30dp; background-color: #406040ff; }
+        #tip { position: absolute; display: none; pointer-events: none; width: 100dp; height: 20dp; background-color: #000000ff; }
+    </style></head><body>
+        <div id='feed'><p id='line1'>1</p><p>2</p><p>3</p><p>4</p><p>5</p><p>6</p><p>7</p><p>8</p></div>
+        <div id='rows'><div class='row' id='row1'>one</div><div class='row' id='row2'>two</div><div class='row' id='row3'>three</div><div class='row' id='row4'>four</div></div>
+        <input id='field' type='text' value='hello world'/>
+        <select id='pick'><option value='a'>Apple</option><option value='b' selected='selected'>Banana</option></select>
+        <select id='plain'><option value='p1'>One</option><option value='p2'>Two</option></select>
+        <div id='help' title='Some help'>?</div>
+        <div id='tip'></div>
+    </body></rml>";
+}
+
+// The queued events by kind, with the parameters these tests read. `watch`: the element whose mouseover and mouseout
+// are counted.
+type value Kinds {
+    public int32 count;
+    public int32 changes;
+    public int32 clicks;
+    public int32 clickMods;
+    public int32 dblclicks;
+    public int32 focuses;
+    public int32 blurs;
+    public int32 keydowns;
+    public int32 keyId;
+    public int32 keyMods;
+    public int32 keyCtrl;
+    public int32 keyShift;
+    public int32 keyAlt;
+    public int32 dragstarts;
+    public int32 dragends;
+    public int32 drops;
+    public int32 dropTarget;
+    public int32 dropDragged;
+    public int32 overs;
+    public int32 outs;
+    public float32 overX;
+    public float32 overY;
+
+    public ctor none()
+    {
+        this.count = 0;
+        this.changes = 0;
+        this.clicks = 0;
+        this.clickMods = 0;
+        this.dblclicks = 0;
+        this.focuses = 0;
+        this.blurs = 0;
+        this.keydowns = 0;
+        this.keyId = 0;
+        this.keyMods = 0;
+        this.keyCtrl = 0;
+        this.keyShift = 0;
+        this.keyAlt = 0;
+        this.dragstarts = 0;
+        this.dragends = 0;
+        this.drops = 0;
+        this.dropTarget = 0;
+        this.dropDragged = 0;
+        this.overs = 0;
+        this.outs = 0;
+        this.overX = 0.0;
+        this.overY = 0.0;
+    }
+}
+
+fn Kinds tally(ref Context ctx, const ref RmlUi ui, int32 watch)
+{
+    Kinds k = Kinds.none();
+    bool more = true;
+    while (more) {
+        Optional<Event> e = ctx.pollEvent();
+        match (e) {
+            case None: { more = false; }
+            case Some(value: ev): {
+                k.count = k.count + 1;
+                match (ev.type) {
+                    case Change: { k.changes = k.changes + 1; }
+                    case Click: {
+                        k.clicks = k.clicks + 1;
+                        k.clickMods = ui.eventModifiers();
+                    }
+                    case Dblclick: { k.dblclicks = k.dblclicks + 1; }
+                    case Focus: { k.focuses = k.focuses + 1; }
+                    case Blur: { k.blurs = k.blurs + 1; }
+                    case Keydown: {
+                        k.keydowns = k.keydowns + 1;
+                        k.keyId = ui.eventInt(name: "key_identifier", fallback: -1);
+                        k.keyMods = ui.eventModifiers();
+                        k.keyCtrl = ui.eventInt(name: "ctrl_key", fallback: -1);
+                        k.keyShift = ui.eventInt(name: "shift_key", fallback: -1);
+                        k.keyAlt = ui.eventInt(name: "alt_key", fallback: -1);
+                    }
+                    case Dragstart: { k.dragstarts = k.dragstarts + 1; }
+                    case Dragend: { k.dragends = k.dragends + 1; }
+                    case Dragdrop: {
+                        k.drops = k.drops + 1;
+                        k.dropTarget = ev.target.handle();
+                        Optional<Element> dragged = ui.eventElement(name: "drag_element");
+                        int32 draggedHandle = match (dragged) { case Some(value: x): x.handle(); case None: 0; };
+                        k.dropDragged = draggedHandle;
+                    }
+                    case Mouseover: {
+                        if (ev.target.handle() == watch) {
+                            k.overs = k.overs + 1;
+                            k.overX = ui.eventFloat(name: "mouse_x", fallback: -1.0);
+                            k.overY = ui.eventFloat(name: "mouse_y", fallback: -1.0);
+                        }
+                    }
+                    case Mouseout: { if (ev.target.handle() == watch) { k.outs = k.outs + 1; } }
+                    case _: { }
+                };
+            }
+        };
+    }
+    return k;
+}
+
+// A key pressed and released with modifiers, then an update.
+fn void chord(ref Context ctx, int32 key, int32 mods)
+{
+    ctx.key(key: key, down: true, mods: mods);
+    ctx.key(key: key, down: false, mods: mods);
+    ctx.update();
+}
+
+// A primary-button drag from the centre of one box to the centre of another, through two moves on the way.
+fn void dragFromTo(ref Context ctx, Rect from, Rect to)
+{
+    ctx.mouseMove(x: from.centerX(), y: from.centerY(), mods: MOD_NONE);
+    ctx.mouseButton(button: 0, down: true, mods: MOD_NONE);
+    ctx.mouseMove(x: from.centerX() + 4.0, y: from.centerY(), mods: MOD_NONE);
+    ctx.mouseMove(x: to.centerX(), y: to.centerY() - 5.0, mods: MOD_NONE);
+    ctx.mouseMove(x: to.centerX(), y: to.centerY(), mods: MOD_NONE);
+    ctx.mouseButton(button: 0, down: false, mods: MOD_NONE);
+    ctx.update();
+}
+
+fn bool isNoString(Optional<string> o)
+{
+    return match (o) { case None: true; case Some(value: x): false; };
+}
+
+fn string orNone(Optional<string> o)
+{
+    return match (o) { case Some(value: x): copy x; case None: "<none>"; };
 }
 
 // Twenty lines for the log, as markup.
@@ -760,6 +932,289 @@ fn int32 main()
     float32 deadClient = log.clientHeight();
     check(t: t, ok: !log.isLive() && deadTop == 0.0 && deadHeight == 0.0 && deadClient == 0.0,
           what: "a dead element scrolls nowhere and measures 0");
+
+    // ---- children appended and removed, a select's options, the clipboard, keys, focus, double clicks, drag and
+    //      drop, and what a tooltip is built from ----
+    Result<Context, RmlUiError> madeLists = Context.create(ui: ui, name: "lists", width: 800, height: 600);
+    Context lc = match (madeLists) {
+        case Ok(value: c): c;
+        case Err(error: e): { println(s: "rmlui tests: no lists context"); return 1; }
+    };
+    lc.setDpRatio(ratio: 1.0);
+    string listsRml = lists();
+    string listsUrl = "tests/fixtures/lists.rml";
+    Optional<Document> loadedLists = lc.loadDocumentRml(rml: listsRml, sourceUrl: listsUrl);
+    Document ldoc = match (loadedLists) { case Some(value: d): d; case None: Document.fromHandle(handle: 0); };
+    check(t: t, ok: ldoc.isLive(), what: "the lists document loads");
+    // Heard from before the first update: RmlUi settles a select with no option marked selected on its first there.
+    Element pick = must(e: ldoc.byId(id: "pick"), what: "pick");
+    Element plain = must(e: ldoc.byId(id: "plain"), what: "plain");
+    Optional<Listener> onPick = pick.listen(event: "change", flags: LISTEN_BUBBLE);
+    Optional<Listener> onPlain = plain.listen(event: "change", flags: LISTEN_BUBBLE);
+    ldoc.show(modal: Modal::None, focus: Focus::None);
+    lc.update();
+    check(t: t, ok: errorsLogged(ui: ui) == 0, what: "...with no error logged");
+    Seen settled = collect(ctx: lc);
+    string plainValue = valueOf(e: plain);
+    check(t: t, ok: settled.changes == 0 && plainValue == "p1",
+          what: "a select RmlUi settles on its first option at the update queues no change ('${plainValue}', ${settled.changes})");
+
+    // appendRml: new lines after the old, which keep their handles, listeners, binding and the scroll offset.
+    Element feed = must(e: ldoc.byId(id: "feed"), what: "feed");
+    Element line1 = must(e: feed.child(index: 0), what: "line 1");
+    Optional<Listener> onLine1 = line1.listen(event: "click", flags: LISTEN_BUBBLE);
+    Optional<Binding> line1Bound = ldoc.bind(id: "line1");
+    Binding lb = match (line1Bound) { case Some(value: b): b; case None: Binding.fromHandle(handle: 0); };
+    feed.setScrollTop(top: 40.0);
+    float32 feedTop = feed.scrollTop();
+    string twoMore = "<p id='line9'>9</p><p>10</p>";
+    int32 added = feed.appendRml(rml: twoMore);
+    int32 feedKids = feed.childCount();
+    check(t: t, ok: added == 2 && feedKids == 10, what: "appendRml adds two lines after eight (${added} added, ${feedKids} now)");
+    Element stillLine1 = must(e: feed.child(index: 0), what: "line 1 after the append");
+    Element line1ViaBinding = must(e: lb.element(), what: "line 1 via its binding");
+    check(t: t, ok: line1.isLive() && stillLine1.same(other: line1) && line1ViaBinding.same(other: line1),
+          what: "...the first line is the same live element, and its binding still names it");
+    float32 feedTopAppended = feed.scrollTop();
+    lc.update();
+    float32 feedTopUpdated = feed.scrollTop();
+    float32 feedHeight = feed.scrollHeight();
+    check(t: t, ok: feedTop == 40.0 && feedTopAppended == 40.0 && feedTopUpdated == 40.0 && feedHeight == 200.0,
+          what: "...the scroll offset survives the append and the update (${feedTopUpdated}, content now ${feedHeight})");
+    drain(ctx: lc);
+    line1.click();
+    Seen line1Heard = collect(ctx: lc);
+    check(t: t, ok: line1Heard.clicks == 1, what: "...and its listener still hears it (${line1Heard.clicks})");
+    Element line9 = must(e: ldoc.byId(id: "line9"), what: "line 9");
+    Element ninth = must(e: feed.child(index: 8), what: "the ninth child");
+    string line9Text = line9.text();
+    check(t: t, ok: line9.same(other: ninth) && line9Text == "9", what: "the new lines come after the old, in order");
+    string blank = "   ";
+    int32 addedBlank = feed.appendRml(rml: blank);
+    check(t: t, ok: addedBlank == 0, what: "whitespace alone appends nothing (${addedBlank})");
+    string bare = "a &amp; b";
+    int32 addedBare = feed.appendRml(rml: bare);
+    Element bareNode = must(e: feed.child(index: 10), what: "the text node");
+    string bareText = bareNode.text();
+    check(t: t, ok: addedBare == 1 && bareText == "a & b",
+          what: "text with no markup appends one text node, entities decoded ('${bareText}')");
+
+    // removeChildren and remove: the oldest lines go, the rest keep their handles.
+    int32 removed = feed.removeChildren(from: 0, count: 3);
+    int32 feedKids2 = feed.childCount();
+    Element newFirst = must(e: feed.child(index: 0), what: "the new first line");
+    string newFirstText = newFirst.text();
+    check(t: t, ok: removed == 3 && feedKids2 == 8 && newFirstText == "4",
+          what: "removeChildren drops the three oldest lines (${removed}; ${feedKids2} left, the first now '${newFirstText}')");
+    Optional<Element> line1Now = lb.element();
+    bool line1Gone = match (line1Now) { case None: true; case Some(value: x): false; };
+    Element line9Again = must(e: feed.child(index: 5), what: "line 9 after the removal");
+    check(t: t, ok: !line1.isLive() && line1Gone && line9Again.same(other: line9),
+          what: "...the removed are dead and their binding finds nothing; the rest keep their handles");
+    int32 clampedRemoved = feed.removeChildren(from: 6, count: 100);
+    int32 feedKids3 = feed.childCount();
+    check(t: t, ok: clampedRemoved == 2 && feedKids3 == 6, what: "a range past the end is clamped (${clampedRemoved}, ${feedKids3} left)");
+    int32 pastEnd = feed.removeChildren(from: 9, count: 1);
+    int32 negative = feed.removeChildren(from: -1, count: 2);
+    check(t: t, ok: pastEnd == 0 && negative == 0 && feed.childCount() == 6, what: "...and one wholly pastEnd removes nothing");
+    check(t: t, ok: line9.remove() && !line9.isLive() && feed.childCount() == 5, what: "an element removes itself");
+    Element ldocRoot = ldoc.root();
+    check(t: t, ok: !ldocRoot.remove() && ldoc.isLive(), what: "a document does not remove itself (it closes)");
+    Element contextRoot = must(e: ldocRoot.parent(), what: "the context's root");
+    string stray = "<p>stray</p>";
+    int32 strayAdded = contextRoot.appendRml(rml: stray);
+    int32 rootRemoved = contextRoot.removeChildren(from: 0, count: 10);
+    check(t: t, ok: strayAdded == 0 && rootRemoved == 0 && ldoc.isLive(),
+          what: "the context's root, a document's parent, is neither appended to nor emptied");
+
+    // A select's children are its options; rebuilding them settles its value at once, quietly.
+    int32 pickKids = pick.childCount();
+    string pickValue = valueOf(e: pick);
+    Element banana = must(e: pick.child(index: 1), what: "banana");
+    string bananaText = banana.text();
+    check(t: t, ok: pickKids == 2 && pickValue == "b" && bananaText == "Banana",
+          what: "a select's children are its options, its value the selected one (${pickKids}, '${pickValue}', '${bananaText}')");
+    drain(ctx: lc);
+    string xyz = "<option value='x'>X</option><option value='y'>Y</option><option value='z'>Z</option>";
+    pick.setInnerRml(rml: xyz);
+    int32 rebuiltKids = pick.childCount();
+    string rebuiltValue = valueOf(e: pick);
+    check(t: t, ok: rebuiltKids == 3 && rebuiltValue == "x" && !banana.isLive(),
+          what: "setInnerRml on a select replaces its options, and its value is the first at once (${rebuiltKids}, '${rebuiltValue}')");
+    lc.update();
+    Seen rebuiltEvents = collect(ctx: lc);
+    string rebuiltValue2 = valueOf(e: pick);
+    check(t: t, ok: rebuiltEvents.changes == 0 && rebuiltValue2 == "x",
+          what: "...queuing no change, then or at the update (${rebuiltEvents.changes}, '${rebuiltValue2}')");
+    string xyMarked = "<option value='x'>X</option><option value='y' selected='selected'>Y</option>";
+    pick.setInnerRml(rml: xyMarked);
+    string markedValue = valueOf(e: pick);
+    string wOption = "<option value='w'>W</option>";
+    int32 optionsAdded = pick.appendRml(rml: wOption);
+    int32 pickKids2 = pick.childCount();
+    string appendedValue = valueOf(e: pick);
+    check(t: t, ok: markedValue == "y" && optionsAdded == 1 && pickKids2 == 3 && appendedValue == "y",
+          what: "the option marked selected wins, and appendRml adds an option and keeps the value ('${markedValue}', ${optionsAdded}, '${appendedValue}')");
+    int32 optionsRemoved = pick.removeChildren(from: 1, count: 1);
+    string afterRemoval = valueOf(e: pick);
+    Element wNow = must(e: pick.child(index: 1), what: "option w");
+    string wText = wNow.text();
+    check(t: t, ok: optionsRemoved == 1 && afterRemoval == "x" && wText == "W",
+          what: "removing the selected option settles on the first ('${afterRemoval}'); the rest move up ('${wText}')");
+    lc.update();
+    Seen quietOptions = collect(ctx: lc);
+    check(t: t, ok: quietOptions.changes == 0, what: "...and none of it queued a change (${quietOptions.changes})");
+    wNow.click();
+    Seen chosen = collect(ctx: lc);
+    string chosenValue = valueOf(e: pick);
+    check(t: t, ok: chosen.changes == 1 && chosenValue == "w",
+          what: "a click on an option is a person's choice: one change ('${chosenValue}', ${chosen.changes})");
+    Element xNow = must(e: pick.child(index: 0), what: "option x");
+    check(t: t, ok: wNow.remove() && pick.childCount() == 1 && xNow.isLive(), what: "an option removes itself");
+    string afterRemove = valueOf(e: pick);
+    lc.update();
+    Seen quietRemove = collect(ctx: lc);
+    check(t: t, ok: afterRemove == "x" && quietRemove.changes == 0,
+          what: "...and the select settles on what is left, quietly ('${afterRemove}', ${quietRemove.changes})");
+
+    // The clipboard: a copy or cut is queued for the program, a paste reads what it provided.
+    Element field = must(e: ldoc.byId(id: "field"), what: "field");
+    check(t: t, ok: field.focus(visible: true), what: "the text field takes focus");
+    chord(ctx: lc, key: KEY_A, mods: MOD_CTRL);
+    chord(ctx: lc, key: KEY_C, mods: MOD_CTRL);
+    string copied = orNone(o: ui.takeClipboardWrite());
+    check(t: t, ok: copied == "hello world", what: "Ctrl+A, Ctrl+C in a field queues its text as a clipboard write ('${copied}')");
+    check(t: t, ok: isNoString(o: ui.takeClipboardWrite()), what: "...once");
+    string fromOs = "from the OS";
+    ui.provideClipboard(text: fromOs);
+    chord(ctx: lc, key: KEY_A, mods: MOD_CTRL);
+    chord(ctx: lc, key: KEY_V, mods: MOD_CTRL);
+    string pasted = valueOf(e: field);
+    check(t: t, ok: pasted == "from the OS", what: "Ctrl+V pastes the provided text over the selection ('${pasted}')");
+    chord(ctx: lc, key: KEY_A, mods: MOD_CTRL);
+    chord(ctx: lc, key: KEY_X, mods: MOD_CTRL);
+    string cut = orNone(o: ui.takeClipboardWrite());
+    string afterCut = valueOf(e: field);
+    check(t: t, ok: cut == "from the OS" && afterCut == "", what: "Ctrl+X queues the text and empties the field ('${cut}', '${afterCut}')");
+    string byButton = "copied by a button";
+    ui.copyText(text: byButton);
+    string buttonWrite = orNone(o: ui.takeClipboardWrite());
+    chord(ctx: lc, key: KEY_V, mods: MOD_CTRL);
+    string pastedAgain = valueOf(e: field);
+    check(t: t, ok: buttonWrite == byButton && pastedAgain == byButton,
+          what: "copyText queues a write, and a later paste reads it with no OS clipboard at all ('${pastedAgain}')");
+
+    // Keys and focus: a keydown's identifier and modifiers; focus and blur where they happen.
+    Optional<Listener> onFieldKeys = field.listen(event: "keydown", flags: LISTEN_BUBBLE);
+    Optional<Listener> onFieldFocus = field.listen(event: "focus", flags: LISTEN_BUBBLE);
+    Optional<Listener> onFieldBlur = field.listen(event: "blur", flags: LISTEN_BUBBLE);
+    drain(ctx: lc);
+    lc.key(key: KEY_X, down: true, mods: MOD_SHIFT | MOD_ALT);
+    lc.key(key: KEY_X, down: false, mods: MOD_SHIFT | MOD_ALT);
+    Kinds keyed = tally(ctx: lc, ui: ui, watch: 0);
+    check(t: t, ok: keyed.keydowns == 1 && keyed.keyId == KEY_X, what: "a keydown carries its key identifier (${keyed.keyId})");
+    check(t: t, ok: keyed.keyMods == (MOD_SHIFT | MOD_ALT) && keyed.keyShift == 1 && keyed.keyAlt == 1 && keyed.keyCtrl == 0,
+          what: "...and its modifiers, as a mask and one by one (${keyed.keyMods})");
+    pick.focus(visible: true);
+    Kinds blurred = tally(ctx: lc, ui: ui, watch: 0);
+    field.focus(visible: true);
+    Kinds focused = tally(ctx: lc, ui: ui, watch: 0);
+    check(t: t, ok: blurred.blurs == 1 && blurred.focuses == 0 && focused.focuses == 1 && focused.blurs == 0,
+          what: "focusing elsewhere blurs the field, and focusing it again is a focus event (${blurred.blurs}, ${focused.focuses})");
+
+    // A double click is two clicks within half a second of RmlUi's clock (setTime), in the same place.
+    Element row1 = must(e: ldoc.byId(id: "row1"), what: "row 1");
+    Element row2 = must(e: ldoc.byId(id: "row2"), what: "row 2");
+    Element row3 = must(e: ldoc.byId(id: "row3"), what: "row 3");
+    Element row4 = must(e: ldoc.byId(id: "row4"), what: "row 4");
+    Element rows = must(e: ldoc.byId(id: "rows"), what: "rows");
+    Optional<Listener> onRow2Click = row2.listen(event: "click", flags: LISTEN_BUBBLE);
+    Optional<Listener> onRow2Double = row2.listen(event: "dblclick", flags: LISTEN_BUBBLE);
+    Rect rr2 = row2.rect(area: BoxArea::Border);
+    drain(ctx: lc);
+    ui.setTime(seconds: 100.0);
+    lc.mouseMove(x: rr2.centerX(), y: rr2.centerY(), mods: MOD_NONE);
+    lc.mouseButton(button: 0, down: true, mods: MOD_CTRL);
+    lc.mouseButton(button: 0, down: false, mods: MOD_CTRL);
+    Kinds firstClick = tally(ctx: lc, ui: ui, watch: 0);
+    check(t: t, ok: firstClick.clicks == 1 && firstClick.clickMods == MOD_CTRL,
+          what: "a click carries its modifiers too (${firstClick.clickMods})");
+    ui.setTime(seconds: 100.2);
+    clickAt(ctx: lc, r: rr2);
+    Kinds quick = tally(ctx: lc, ui: ui, watch: 0);
+    ui.setTime(seconds: 101.0);
+    clickAt(ctx: lc, r: rr2);
+    ui.setTime(seconds: 102.0);
+    clickAt(ctx: lc, r: rr2);
+    Kinds slow = tally(ctx: lc, ui: ui, watch: 0);
+    check(t: t, ok: quick.dblclicks == 1 && slow.dblclicks == 0 && slow.clicks == 2,
+          what: "two clicks 0.2 s apart are a dblclick, two 1 s apart are not (${quick.dblclicks}, ${slow.dblclicks})");
+
+    // Drag and drop: rows with `drag: drag-drop`; one listener on their container hears the drop.
+    Optional<Listener> onDrop = rows.listen(event: "dragdrop", flags: LISTEN_BUBBLE);
+    Optional<Listener> onDragStart = row1.listen(event: "dragstart", flags: LISTEN_BUBBLE);
+    Optional<Listener> onDragEnd = row1.listen(event: "dragend", flags: LISTEN_BUBBLE);
+    Rect rr1 = row1.rect(area: BoxArea::Border);
+    Rect rr3 = row3.rect(area: BoxArea::Border);
+    drain(ctx: lc);
+    dragFromTo(ctx: lc, from: rr1, to: rr3);
+    Kinds dropped = tally(ctx: lc, ui: ui, watch: 0);
+    check(t: t, ok: dropped.dragstarts == 1 && dropped.dragends == 1,
+          what: "a drag raises dragstart and dragend on the dragged row (${dropped.dragstarts}, ${dropped.dragends})");
+    check(t: t, ok: dropped.drops == 1 && dropped.dropTarget == row3.handle() && dropped.dropDragged == row1.handle(),
+          what: "a drop on row 3 is one dragdrop: target row 3, drag_element row 1 (${dropped.dropTarget}, ${dropped.dropDragged})");
+    Rect rr4 = row4.rect(area: BoxArea::Border);
+    dragFromTo(ctx: lc, from: rr2, to: rr4);
+    check(t: t, ok: row2.remove(), what: "a dragged row is removed before its drop is polled");
+    Kinds orphaned = tally(ctx: lc, ui: ui, watch: 0);
+    check(t: t, ok: orphaned.drops == 1 && orphaned.dropTarget == row4.handle() && orphaned.dropDragged == 0,
+          what: "...and its drag_element then reads as None, not freed memory");
+
+    // A tooltip's parts: the mouseover, the title, a positioned element that `pointer-events: none` keeps out of the
+    // way, and the mouseout.
+    Element help = must(e: ldoc.byId(id: "help"), what: "help");
+    Element tip = must(e: ldoc.byId(id: "tip"), what: "tip");
+    Optional<Listener> onOver = ldocRoot.listen(event: "mouseover", flags: LISTEN_BUBBLE);
+    Optional<Listener> onOut = ldocRoot.listen(event: "mouseout", flags: LISTEN_BUBBLE);
+    lc.update();   // the removed row moved everything below it up: lay out before reading a box
+    Rect hr = help.rect(area: BoxArea::Border);
+    drain(ctx: lc);
+    lc.mouseMove(x: hr.centerX(), y: hr.centerY(), mods: MOD_NONE);
+    lc.update();
+    Kinds over = tally(ctx: lc, ui: ui, watch: help.handle());
+    string titleAttr = "title";
+    string helpTitle = orNone(o: help.attribute(name: titleAttr));
+    check(t: t, ok: over.overs == 1 && helpTitle == "Some help",
+          what: "the pointer arriving raises one mouseover targeted at the titled element ('${helpTitle}')");
+    float32 tipX = over.overX;
+    float32 tipY = over.overY;
+    tip.setText(text: helpTitle);
+    string leftPx = "${tipX}px";
+    string topPx = "${tipY}px";
+    tip.setProperty(name: "left", value: leftPx);
+    tip.setProperty(name: "top", value: topPx);
+    tip.setProperty(name: "display", value: "block");
+    lc.update();
+    Rect tr = tip.rect(area: BoxArea::Border);
+    check(t: t, ok: tr.x == tipX && tr.y == tipY && tr.width == 100.0,
+          what: "the tooltip lays out where the pointer is (${tr.x}, ${tr.y})");
+    lc.mouseMove(x: hr.centerX() + 1.0, y: hr.centerY() + 1.0, mods: MOD_NONE);
+    lc.update();
+    Optional<Element> hovered = lc.hoverElement();
+    bool stillHelp = match (hovered) { case Some(value: x): x.same(other: help); case None: false; };
+    Optional<Element> atPointer = lc.elementAtPoint(x: tipX + 2.0, y: tipY + 2.0);
+    bool pointsAtHelp = match (atPointer) { case Some(value: x): x.same(other: help); case None: false; };
+    check(t: t, ok: stillHelp && pointsAtHelp, what: "...and with pointer-events: none it leaves the hover on the titled element");
+    drain(ctx: lc);
+    lc.mouseMove(x: 700.0, y: 550.0, mods: MOD_NONE);
+    lc.update();
+    Kinds left = tally(ctx: lc, ui: ui, watch: help.handle());
+    check(t: t, ok: left.outs == 1, what: "leaving it raises one mouseout targeted at it, where the tooltip hides (${left.outs})");
+
+    lc.destroy();
+    check(t: t, ok: !feed.isLive() && feed.appendRml(rml: twoMore) == 0 && feed.removeChildren(from: 0, count: 1) == 0 &&
+                    !newFirst.remove() && pick.childCount() == 0,
+          what: "a destroyed context's elements append, remove and count nothing");
 
     // ---- a second context is independent ----
     Result<Context, RmlUiError> madeSide = Context.create(ui: ui, name: "side", width: 320, height: 200);

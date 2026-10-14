@@ -4,11 +4,12 @@ file @compileFor(!ARCH_WASM32);
 // event queue kama polls. RmlUi draws nothing: `Context.render` records draw commands for whatever renderer the
 // program has (csrc/kama_rmlui.h, "THE SHAPE, AND WHY").
 //
-//   RmlUi        the library: start it, load fonts, provide images, read RmlUi's log and the textures; shut it down
+//   RmlUi        the library: start it, load fonts, provide images, read RmlUi's log and the textures, the last
+//                event's parameters, the clipboard; shut it down
 //   Context      one UI surface: size, input, update, render, the recorded commands, its event queue; destroy it
 //   Document     a loaded document: show, hide, close, find elements, tab order, bindings
-//   Element      any element: tag, id, attributes, classes, inline properties, inner RML, text, a form control's
-//                value, its box, scrolling, focus, click, listeners
+//   Element      any element: tag, id, attributes, classes, inline properties, inner RML (set or appended), text,
+//                children (counted, removed), a form control's value, its box, scrolling, focus, click, listeners
 //   Binding      an id held across rewrites: the same handle for (document, id), re-finding its element and carrying
 //                its listeners to it
 //   Event        one queued event: the listener (and binding) that heard it, its type, the element, the target
@@ -48,6 +49,9 @@ extern fn int32 kama_rmlui_load_font_face_memory(UnsafeConstPtr<uint8> data, int
 extern fn void  kama_rmlui_provide_image(UnsafeConstPtr<cchar> name, UnsafeConstPtr<uint8> rgba, int32 width, int32 height);
 extern fn void  kama_rmlui_set_log_echo(int32 on);
 extern fn int32 kama_rmlui_poll_log(UnsafePtr<int32> type);
+extern fn void  kama_rmlui_provide_clipboard(UnsafeConstPtr<cchar> text);
+extern fn void  kama_rmlui_copy_text(UnsafeConstPtr<cchar> text);
+extern fn int32 kama_rmlui_take_clipboard_write();
 
 extern fn int32 kama_rmlui_context_create(UnsafeConstPtr<cchar> name, int32 width, int32 height);
 extern fn void  kama_rmlui_context_destroy(int32 context);
@@ -93,6 +97,9 @@ extern fn int32 kama_rmlui_element_property(int32 element, UnsafeConstPtr<cchar>
 extern fn int32 kama_rmlui_element_value(int32 element);
 extern fn void  kama_rmlui_element_set_inner_rml(int32 element, UnsafeConstPtr<cchar> rml);
 extern fn void  kama_rmlui_element_set_text(int32 element, UnsafeConstPtr<cchar> text);
+extern fn int32 kama_rmlui_element_append_rml(int32 element, UnsafeConstPtr<cchar> rml);
+extern fn int32 kama_rmlui_element_remove_children(int32 element, int32 from, int32 count);
+extern fn int32 kama_rmlui_element_remove(int32 element);
 extern fn void  kama_rmlui_element_set_attribute(int32 element, UnsafeConstPtr<cchar> name, UnsafeConstPtr<cchar> value);
 extern fn void  kama_rmlui_element_remove_attribute(int32 element, UnsafeConstPtr<cchar> name);
 extern fn void  kama_rmlui_element_set_attribute_quiet(int32 element, UnsafeConstPtr<cchar> name, UnsafeConstPtr<cchar> value);
@@ -132,6 +139,8 @@ extern fn int32 kama_rmlui_event_name();
 extern fn int32 kama_rmlui_event_param_int(UnsafeConstPtr<cchar> name, int32 fallback);
 extern fn float32 kama_rmlui_event_param_float(UnsafeConstPtr<cchar> name, float32 fallback);
 extern fn int32 kama_rmlui_event_param_string(UnsafeConstPtr<cchar> name);
+extern fn int32 kama_rmlui_event_param_element(UnsafeConstPtr<cchar> name);
+extern fn int32 kama_rmlui_event_modifiers();
 
 extern fn int32 kama_rmlui_command_count(int32 context);
 extern fn int32 kama_rmlui_command_kind(int32 context, int32 i);
@@ -601,6 +610,32 @@ type value RmlUi {
         return taken(n: n);
     }
 
+    // An element-valued parameter of the last polled event. RmlUi has one: "drag_element", the element being dragged,
+    // on dragstart, drag, dragend, dragover, dragout and dragdrop. None when absent or no longer live.
+    public unsafe const fn Optional<Element> eventElement(const ref string name)
+    {
+        int32 h = kama_rmlui_event_param_element(name: name.cstr());
+        return someElement(handle: h);
+    }
+
+    // The last polled event's modifiers as a MOD_* mask (MOD_CTRL | MOD_SHIFT, …), from the "ctrl_key", "shift_key",
+    // "alt_key", "meta_key" and lock parameters RmlUi puts on every key and mouse event. 0 when it carries none.
+    public unsafe const fn int32 eventModifiers() { return kama_rmlui_event_modifiers(); }
+
+    // The clipboard, pulled: RmlUi's text fields copy, cut and paste (Ctrl+C, Ctrl+X, Ctrl+V) through it, and none of
+    // it reaches the OS by itself. `provideClipboard` is what a paste reads: hand it the OS clipboard's text before
+    // injecting the input that pastes (on Ctrl/Cmd+V, or every frame). A copy or cut in a field — and `copyText`, for a
+    // Copy button — sets that text too and queues it; `takeClipboardWrite` pops the oldest (None when none is queued)
+    // for the program to put on the OS clipboard. ⚠️ RmlUi's fields read only Ctrl: on macOS, inject Cmd as MOD_CTRL.
+    public unsafe fn void provideClipboard(const ref string text) { kama_rmlui_provide_clipboard(text: text.cstr()); }
+    public unsafe fn void copyText(const ref string text) { kama_rmlui_copy_text(text: text.cstr()); }
+
+    public unsafe fn Optional<string> takeClipboardWrite()
+    {
+        int32 n = kama_rmlui_take_clipboard_write();
+        return taken(n: n);
+    }
+
     // The textures, shared by every context: handles 1..textureCount().
     public unsafe const fn int32 textureCount() { return kama_rmlui_texture_count(); }
 
@@ -923,6 +958,8 @@ type value Element {
         return someElement(handle: h);
     }
 
+    // The children, by index. ⚠️ A <select>'s children are its options, as in a browser (RmlUi keeps them out of the
+    // DOM, in the drop-down); `appendRml`, `removeChildren`, `setInnerRml` and `setText` treat them the same way.
     public unsafe const fn int32 childCount() { return kama_rmlui_element_child_count(element: this.hid); }
 
     public unsafe const fn Optional<Element> child(int32 index)
@@ -944,6 +981,24 @@ type value Element {
     {
         kama_rmlui_element_set_inner_rml(element: this.hid, rml: rml.cstr());
     }
+
+    // Append: parse markup into new children AFTER the existing ones, which are left alone — their handles, listeners
+    // and bindings, and this element's scroll offset, all survive, and the cost is the new markup's. Text with no
+    // markup becomes one text node. Returns how many children were added. The same parser warning as `setInnerRml`.
+    public unsafe fn int32 appendRml(const ref string rml)
+    {
+        return kama_rmlui_element_append_rml(element: this.hid, rml: rml.cstr());
+    }
+
+    // Remove `count` children from index `from` on (clamped to what is there), destroying them: their handles go
+    // dead. A log drops its oldest lines this way, without a rewrite. Returns how many were removed.
+    public unsafe fn int32 removeChildren(int32 from, int32 count)
+    {
+        return kama_rmlui_element_remove_children(element: this.hid, from: from, count: count);
+    }
+
+    // Remove this element from its parent, destroying it. False for a dead element or a document (`close` that).
+    public unsafe fn bool remove() { return kama_rmlui_element_remove(element: this.hid) != 0; }
 
     // The text of every text node inside, in order; and replacing the children with one text node, escaped.
     public unsafe const fn string text()

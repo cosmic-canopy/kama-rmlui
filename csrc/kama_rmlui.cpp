@@ -29,6 +29,7 @@
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/ElementText.h>
 #include <RmlUi/Core/Elements/ElementFormControl.h>
+#include <RmlUi/Core/Elements/ElementFormControlSelect.h>
 #include <RmlUi/Core/StringUtilities.h>
 
 #include <cstdio>
@@ -188,7 +189,8 @@ struct QueuedEvent {
     int32_t         target = 0;
     int32_t         binding = 0;
     Rml::String     name;
-    Rml::Dictionary params;
+    Rml::Dictionary params;      // never a raw pointer: those are taken out at queue time (see ProcessEvent)
+    std::vector<std::pair<Rml::String, int32_t>> elements;   // element-valued parameters, as handles
 };
 
 struct ContextRec {
@@ -270,6 +272,11 @@ std::unordered_map<std::string, int32_t>    g_binding_ids;   // "<document>:<id>
 QueuedEvent             g_last_event;
 std::deque<LogLine>     g_log;
 bool                    g_log_echo = true;
+// The clipboard, PULLED rather than reached: RmlUi's text fields read `g_clipboard` on a paste (the program provides
+// the OS clipboard's text into it), and every copy or cut — and the program's own `copy_text` — lands in it and on
+// `g_clipboard_writes`, which the program drains into the OS clipboard. The last 64 writes are kept.
+std::string             g_clipboard;
+std::deque<std::string> g_clipboard_writes;
 std::string             g_scratch;
 
 int                     g_refs = 0;
@@ -650,8 +657,20 @@ public:
         return true;
     }
 
+    // RmlUi's text fields call these on Ctrl+C / Ctrl+X (set) and Ctrl+V (get). The default keeps a private string,
+    // which never reaches the OS; here a write is also queued for the program, and a read gets what it provided.
+    void SetClipboardText(const Rml::String& text) override;
+    void GetClipboardText(Rml::String& text) override { text = g_clipboard; }
+
     double elapsed = 0.0;
 };
+
+void ShimSystemInterface::SetClipboardText(const Rml::String& text)
+{
+    g_clipboard = text;
+    g_clipboard_writes.push_back(text);
+    while (g_clipboard_writes.size() > 64) { g_clipboard_writes.pop_front(); }
+}
 
 // ⚠️ RmlUi's slider (WidgetSlider::SetValueInternal) FORCES a Change on every movement, so a step past either end or
 // a drag within one step raises one carrying the value it already had. A browser raises none for those. The slider
@@ -701,6 +720,19 @@ public:
         q.target = handleOf(event.GetTargetElement());
         q.name = event.GetType();
         q.params = event.GetParameters();
+        // ⚠️ A RAW POINTER MUST NOT OUTLIVE THE DISPATCH: the queue is read later, when the element may be gone. RmlUi's
+        // one pointer parameter is the drag events' `drag_element` (Context::GenerateDragEventParameters); it becomes
+        // a handle now, which a later read answers as dead rather than dangling. Any other pointer is dropped.
+        for (auto it = q.params.begin(); it != q.params.end();) {
+            if (it->second.GetType() != Rml::Variant::VOIDPTR) {
+                ++it;
+                continue;
+            }
+            if (it->first == "drag_element") {
+                q.elements.emplace_back(it->first, handleOf(static_cast<Rml::Element*>(it->second.Get<void*>())));
+            }
+            it = q.params.erase(it);
+        }
         c->events.push_back(std::move(q));
         if (stop) { event.StopPropagation(); }
     }
@@ -741,6 +773,11 @@ const Texture* textureAt(int32_t handle)
 Rml::ElementFormControl* controlAt(int32_t element)
 {
     return rmlui_dynamic_cast<Rml::ElementFormControl*>(elementAt(element));
+}
+
+Rml::ElementFormControlSelect* asSelect(Rml::Element* e)
+{
+    return rmlui_dynamic_cast<Rml::ElementFormControlSelect*>(e);
 }
 
 void gatherText(Rml::Element* e, std::string& out)
@@ -795,6 +832,8 @@ extern "C" void kama_rmlui_shutdown(void)
     g_last_event = QueuedEvent();
     g_recording = nullptr;
     g_system.elapsed = 0.0;
+    g_clipboard.clear();
+    g_clipboard_writes.clear();
     g_shutting_down = false;
 }
 
@@ -875,6 +914,20 @@ extern "C" void kama_rmlui_provide_image(const char* name, const uint8_t* rgba, 
 // ---- the log ---------------------------------------------------------------------------------------------------------------
 
 extern "C" void kama_rmlui_set_log_echo(int32_t on) { g_log_echo = on != 0; }
+
+// ---- the clipboard ---------------------------------------------------------------------------------------------------------
+
+extern "C" void kama_rmlui_provide_clipboard(const char* text) { g_clipboard = (text != nullptr) ? text : ""; }
+
+extern "C" void kama_rmlui_copy_text(const char* text) { g_system.SetClipboardText((text != nullptr) ? text : ""); }
+
+extern "C" int32_t kama_rmlui_take_clipboard_write(void)
+{
+    if (g_clipboard_writes.empty()) { return -1; }
+    const int32_t n = scratch(g_clipboard_writes.front());
+    g_clipboard_writes.pop_front();
+    return n;
+}
 
 extern "C" int32_t kama_rmlui_poll_log(int32_t* type)
 {
@@ -1136,16 +1189,29 @@ extern "C" int32_t kama_rmlui_element_parent(int32_t element)
     return (e == nullptr) ? 0 : handleOf(e->GetParentNode());
 }
 
+// ⚠️ A <select>'s children are its OPTIONS, as a browser's are. RmlUi moves each <option> out of the DOM into the
+// drop-down (ElementFormControlSelect::MoveChildren), so its DOM children are none; these answer the options instead.
+// Asking moves any option written since into the drop-down now, quietly (moving one raises no change in a browser).
 extern "C" int32_t kama_rmlui_element_child_count(int32_t element)
 {
     Rml::Element* e = elementAt(element);
-    return (e == nullptr) ? 0 : e->GetNumChildren();
+    if (e == nullptr) { return 0; }
+    if (Rml::ElementFormControlSelect* s = asSelect(e)) {
+        ScriptWrite write(true);
+        return s->GetNumOptions();
+    }
+    return e->GetNumChildren();
 }
 
 extern "C" int32_t kama_rmlui_element_child(int32_t element, int32_t index)
 {
     Rml::Element* e = elementAt(element);
-    if (e == nullptr || index < 0 || index >= e->GetNumChildren()) { return 0; }
+    if (e == nullptr || index < 0) { return 0; }
+    if (Rml::ElementFormControlSelect* s = asSelect(e)) {
+        ScriptWrite write(true);
+        return (index < s->GetNumOptions()) ? handleOf(s->GetOption(index)) : 0;
+    }
+    if (index >= e->GetNumChildren()) { return 0; }
     return handleOf(e->GetChild(index));
 }
 
@@ -1208,18 +1274,132 @@ extern "C" int32_t kama_rmlui_element_value(int32_t element)
     return (c == nullptr) ? -1 : scratch(c->GetValue());
 }
 
+namespace {
+
+// After a script changed a <select>'s options: move the new ones into the drop-down and settle the selection NOW, the
+// way RmlUi's WidgetDropDown::OnUpdate would at the next update (the first option marked `selected`, else the last
+// whose value is the select's value, else the first), so `value` is right at once, as a browser's is, and the update's
+// own pass finds nothing to change. Run inside a quiet ScriptWrite: none of it is a person's choice.
+void settleSelect(Rml::ElementFormControlSelect* s)
+{
+    const int n = s->GetNumOptions();
+    const Rml::String value = s->GetAttribute("value", Rml::String());
+    int pick = -1;
+    int byValue = -1;
+    for (int i = 0; i < n; ++i) {
+        Rml::Element* o = s->GetOption(i);
+        if (o == nullptr) { continue; }
+        if (o->HasAttribute("selected")) {
+            pick = i;
+            break;
+        }
+        if (!value.empty() && o->GetAttribute("value", Rml::String()) == value) { byValue = i; }
+    }
+    if (pick < 0) { pick = (byValue >= 0) ? byValue : (n > 0 ? 0 : -1); }
+    if (pick >= 0) { s->SetSelection(pick); }
+}
+
+// The closest <select> at or above `e` (an option sits in the select's drop-down, a non-DOM child), or nullptr.
+Rml::ElementFormControlSelect* closestSelect(Rml::Element* e)
+{
+    for (Rml::Element* a = e; a != nullptr; a = a->GetParentNode()) {
+        if (Rml::ElementFormControlSelect* s = asSelect(a)) { return s; }
+    }
+    return nullptr;
+}
+
+// The context's root holds its documents: nothing is appended to it or removed from it here (`document_close` is how
+// a document goes). Its handle is reachable, as a document's `parent`. ⚠️ Asked of the contexts, not of the element:
+// the root belongs to no document, so its own `GetContext()` answers nullptr.
+bool isContextRoot(Rml::Element* e)
+{
+    bool found = false;
+    g_contexts.each([&](int32_t, ContextRec*& r) {
+        if (r != nullptr && r->context != nullptr && r->context->GetRootElement() == e) { found = true; }
+    });
+    return found;
+}
+
+void setInnerRml(Rml::Element* e, const Rml::String& rml)
+{
+    if (Rml::ElementFormControlSelect* s = asSelect(e)) {
+        // ⚠️ SetInnerRML removes DOM children only, and a select's options are not in the DOM: without this the old
+        // options stay and the new ones are added after them.
+        ScriptWrite write(true);
+        s->RemoveAll();
+        e->SetInnerRML(rml);
+        settleSelect(s);
+        return;
+    }
+    e->SetInnerRML(rml);
+}
+
+} // namespace
+
 extern "C" void kama_rmlui_element_set_inner_rml(int32_t element, const char* rml)
 {
     Rml::Element* e = elementAt(element);
     if (e == nullptr || rml == nullptr) { return; }
-    e->SetInnerRML(rml);
+    setInnerRml(e, rml);
 }
 
 extern "C" void kama_rmlui_element_set_text(int32_t element, const char* text)
 {
     Rml::Element* e = elementAt(element);
     if (e == nullptr || text == nullptr) { return; }
-    e->SetInnerRML(Rml::StringUtilities::EncodeRml(text));
+    setInnerRml(e, Rml::StringUtilities::EncodeRml(text));
+}
+
+extern "C" int32_t kama_rmlui_element_append_rml(int32_t element, const char* rml)
+{
+    Rml::Element* e = elementAt(element);
+    if (e == nullptr || rml == nullptr || isContextRoot(e)) { return 0; }
+    if (Rml::ElementFormControlSelect* s = asSelect(e)) {
+        ScriptWrite write(true);
+        const int before = s->GetNumOptions();
+        // The same parser SetInnerRML runs, without the removal: it appends what it builds to `e`.
+        Rml::Factory::InstanceElementText(e, rml);
+        settleSelect(s);
+        return s->GetNumOptions() - before;
+    }
+    const int before = e->GetNumChildren();
+    Rml::Factory::InstanceElementText(e, rml);
+    return e->GetNumChildren() - before;
+}
+
+extern "C" int32_t kama_rmlui_element_remove_children(int32_t element, int32_t from, int32_t count)
+{
+    Rml::Element* e = elementAt(element);
+    if (e == nullptr || from < 0 || count <= 0 || isContextRoot(e)) { return 0; }
+    ScriptWrite write(true);
+    if (Rml::ElementFormControlSelect* s = asSelect(e)) {
+        const int n = s->GetNumOptions();
+        const int last = (count > n - from) ? n : from + count;
+        int removed = 0;
+        for (int i = from; i < last; ++i, ++removed) { s->Remove(from); }
+        if (removed > 0) { settleSelect(s); }
+        return removed;
+    }
+    const int n = e->GetNumChildren();
+    const int last = (count > n - from) ? n : from + count;
+    int removed = 0;
+    // From the end of the range back, so each removal leaves the indices before it alone. The removed element is
+    // destroyed as its ElementPtr goes; its listeners retire through OnDetach and its handle reads as dead.
+    for (int i = last - 1; i >= from; --i, ++removed) { e->RemoveChild(e->GetChild(i)); }
+    return removed;
+}
+
+extern "C" int32_t kama_rmlui_element_remove(int32_t element)
+{
+    Rml::Element* e = elementAt(element);
+    if (e == nullptr || rmlui_dynamic_cast<Rml::ElementDocument*>(e) != nullptr) { return 0; }
+    Rml::Element* parent = e->GetParentNode();
+    if (parent == nullptr) { return 0; }
+    ScriptWrite write(true);
+    Rml::ElementFormControlSelect* s = closestSelect(parent);
+    parent->RemoveChild(e);
+    if (s != nullptr) { settleSelect(s); }
+    return 1;
 }
 
 namespace {
@@ -1614,6 +1794,33 @@ extern "C" int32_t kama_rmlui_event_param_string(const char* name)
     auto it = g_last_event.params.find(name);
     if (it == g_last_event.params.end()) { return -1; }
     return scratch(it->second.Get<Rml::String>());
+}
+
+extern "C" int32_t kama_rmlui_event_param_element(const char* name)
+{
+    if (name == nullptr) { return 0; }
+    for (const auto& p : g_last_event.elements) {
+        if (p.first == name) { return elementAt(p.second) != nullptr ? p.second : 0; }
+    }
+    return 0;
+}
+
+extern "C" int32_t kama_rmlui_event_modifiers(void)
+{
+    // RmlUi attaches one 0/1 parameter per modifier to every key and mouse event
+    // (Context::GenerateKeyModifierEventParameters).
+    static const struct { const char* name; int32_t bit; } mods[] = {
+        {"ctrl_key", KAMA_RMLUI_MOD_CTRL},         {"shift_key", KAMA_RMLUI_MOD_SHIFT},
+        {"alt_key", KAMA_RMLUI_MOD_ALT},           {"meta_key", KAMA_RMLUI_MOD_META},
+        {"caps_lock_key", KAMA_RMLUI_MOD_CAPSLOCK}, {"num_lock_key", KAMA_RMLUI_MOD_NUMLOCK},
+        {"scroll_lock_key", KAMA_RMLUI_MOD_SCROLLLOCK},
+    };
+    int32_t mask = 0;
+    for (const auto& m : mods) {
+        auto it = g_last_event.params.find(m.name);
+        if (it != g_last_event.params.end() && it->second.Get<int>(0) != 0) { mask |= m.bit; }
+    }
+    return mask;
 }
 
 // ---- reading back the recorded draw commands ----------------------------------------------------------------------------------------------

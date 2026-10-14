@@ -131,6 +131,22 @@ void    kama_rmlui_set_log_echo(int32_t on);
 // Pop the oldest message: its length (text in the scratch buffer) and `*type`, or -1 when none is queued.
 int32_t kama_rmlui_poll_log(int32_t* type);
 
+// ---- the clipboard -----------------------------------------------------------------------------------------------
+//
+// RmlUi's text fields copy, cut and paste on Ctrl+C, Ctrl+X and Ctrl+V (and select all on Ctrl+A) through its system
+// interface, which by default keeps a private string that never reaches the OS. Here it is PULLED, never reached
+// from inside: kama calls no callback.
+//   - A PASTE reads the text last PROVIDED. Provide the OS clipboard's text before the input that pastes is injected
+//     (on seeing Ctrl/Cmd+V, or every frame).
+//   - A COPY OR CUT, and `copy_text` (a Copy button's), sets that text too and QUEUES it: drain the queue with
+//     `take_clipboard_write` and put the newest on the OS clipboard. The last 64 writes are kept.
+// So without any OS clipboard, copy and paste still work within the program. ⚠️ RmlUi's fields read only the Ctrl
+// modifier: on macOS, inject Cmd+C/X/V/A with KAMA_RMLUI_MOD_CTRL. Cleared by the last shutdown.
+void    kama_rmlui_provide_clipboard(const char* text);
+void    kama_rmlui_copy_text(const char* text);
+// Pop the oldest queued write: its length (the text in the scratch buffer), or -1 when none is queued.
+int32_t kama_rmlui_take_clipboard_write(void);
+
 // ---- contexts ----------------------------------------------------------------------------------------------------------
 
 // A context is one independent UI surface — sized in FRAMEBUFFER PIXELS, never logical points. `name` must be unique
@@ -215,6 +231,9 @@ int32_t kama_rmlui_element_by_id(int32_t scope, const char* id);
 int32_t kama_rmlui_element_query(int32_t scope, const char* selector);
 int32_t kama_rmlui_element_owner_document(int32_t element);
 int32_t kama_rmlui_element_parent(int32_t element);
+// The element's children (DOM children: not a scrollbar or a slider's parts). ⚠️ ON A <select> THEY ARE ITS OPTIONS,
+// as a browser's are, although RmlUi keeps them out of the DOM, in the drop-down; `append_rml`, `remove_children`,
+// `set_inner_rml` and `set_text` treat a select's options the same way.
 int32_t kama_rmlui_element_child_count(int32_t element);
 int32_t kama_rmlui_element_child(int32_t element, int32_t index);
 // The deepest focused element under this one (RmlUi's GetFocusLeafNode): the element itself when nothing inside it
@@ -240,6 +259,22 @@ int32_t kama_rmlui_element_value(int32_t element);
 void    kama_rmlui_element_set_inner_rml(int32_t element, const char* rml);
 // Replace the children with one text node holding `text` verbatim (escaped with RmlUi's own EncodeRml).
 void    kama_rmlui_element_set_text(int32_t element, const char* text);
+// APPEND: parse `rml` into new children after the existing ones, which are left alone — their handles, listeners,
+// bindings and the element's scroll offset all survive, and the cost is the new markup's, not the element's. (It is
+// the parser `set_inner_rml` runs, without the removal.) Text with no markup becomes one text node, entities decoded;
+// whitespace alone adds nothing. Returns how many children were added. The same parser warning applies.
+int32_t kama_rmlui_element_append_rml(int32_t element, const char* rml);
+// Remove `count` children starting at index `from` (clamped to the children there are), destroying them: their
+// handles are dead and their listeners gone. What lets a log drop its oldest lines without a rewrite. Returns how
+// many were removed.
+int32_t kama_rmlui_element_remove_children(int32_t element, int32_t from, int32_t count);
+// Remove the element itself from its parent, destroying it. 1 when it was removed; 0 for a dead handle, a document
+// (close it instead) or an element with no parent.
+int32_t kama_rmlui_element_remove(int32_t element);
+// ⚠️ A <select> REBUILT by any of these settles its selection AT ONCE, the way RmlUi would at the next update (the
+// option marked `selected`, else the first), so its value reads right immediately and the update finds nothing left
+// to settle — and QUIETLY: none of these writes queues a `change`, as
+// none raises one in a browser.
 void    kama_rmlui_element_set_attribute(int32_t element, const char* name, const char* value);
 void    kama_rmlui_element_remove_attribute(int32_t element, const char* name);
 // The same two writes, QUIET: no `change` event they make RmlUi raise is queued. ⚠️ RmlUi raises `change` for a
@@ -341,6 +376,14 @@ int32_t kama_rmlui_encode_rml(const char* text);
 // attribute, which it updates only after a real change) is not queued. Every real change still is, one per step
 // crossed, so a slider previews live. A script's write (`set_value`, `set_attribute`) that moves the value is a real
 // change and is kept, unless it was written quietly.
+//
+// DRAG AND DROP is RmlUi's: an element whose RCSS `drag` is `drag-drop` (it stays put) or `clone` (a copy follows the
+// pointer) raises `dragstart`, `drag` and `dragend` on itself, and the element under the pointer — never the dragged
+// one — gets `dragover`, `dragout` and, on release, `dragdrop`. All of them bubble, so one listener on a list hears a
+// drop on any row; `target` is the row (or the deepest element in it) and the dragged element is the event's
+// `drag_element` parameter (`kama_rmlui_event_param_element`). `drag: drag` raises only the first three: no drop.
+// A drag starts at the first pointer move with the primary button down on the element (or on anything inside it
+// whose `drag` is `none`); `drag: block` stops that search.
 #define KAMA_RMLUI_LISTEN_CAPTURE 1
 #define KAMA_RMLUI_LISTEN_STOP    2
 int32_t kama_rmlui_listen(int32_t element, const char* event, int32_t flags);
@@ -387,6 +430,14 @@ int32_t kama_rmlui_event_name(void);
 int32_t kama_rmlui_event_param_int(const char* name, int32_t fallback);
 float   kama_rmlui_event_param_float(const char* name, float fallback);
 int32_t kama_rmlui_event_param_string(const char* name);
+// An element-valued parameter of the last popped event, as a handle (0 when absent or dead). RmlUi has one: the drag
+// events' `drag_element`, the element being dragged. It is taken as a handle when the event is queued, so it never
+// dangles.
+int32_t kama_rmlui_event_param_element(const char* name);
+// The modifiers of the last popped event as a KAMA_RMLUI_MOD_* mask, from the `ctrl_key`, `shift_key`, `alt_key`,
+// `meta_key`, `caps_lock_key`, `num_lock_key` and `scroll_lock_key` parameters RmlUi attaches to every key and mouse
+// event (each also readable alone, 0 or 1, with `event_param_int`). 0 for an event that carries none.
+int32_t kama_rmlui_event_modifiers(void);
 
 // ---- reading back the recorded draw commands --------------------------------------------------------------------------
 //

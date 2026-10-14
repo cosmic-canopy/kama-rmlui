@@ -5,6 +5,44 @@ package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] — unreleased
+
+What `@kama/ui` 0.3.0's native leg needs, in one release. Additions, plus fixes for a `<select>`. No existing signature
+changes.
+
+### Added
+
+- `Element.appendRml(rml:) -> int32`: parses markup into new children after the existing ones. It returns how many
+  were added. Existing children keep their handles, listeners and bindings, the scroll offset stays, and the cost is
+  the new markup's only (RmlUi's own `Factory::InstanceElementText`, the parser `SetInnerRML` runs).
+- `Element.removeChildren(from:, count:) -> int32` (clamped; returns how many were removed) and `Element.remove() ->
+  bool`. A document is closed, never removed, and the context's root takes neither call.
+- The clipboard, pulled: `RmlUi.provideClipboard(text:)` (what a paste reads), `RmlUi.copyText(text:)` and
+  `RmlUi.takeClipboardWrite() -> Optional<string>`, which pops each copy, cut or `copyText` for the OS clipboard. The
+  shim's system interface now overrides `GetClipboardText` / `SetClipboardText`. Before, RmlUi's fields copied into a
+  private string.
+- `RmlUi.eventElement(name:) -> Optional<Element>`: the drag events' `drag_element`. The shim turns that pointer into
+  a handle when it queues the event, and drops any other raw pointer parameter, so a later read never dangles.
+- `RmlUi.eventModifiers() -> int32`: the last event's `MOD_*` mask, from RmlUi's `ctrl_key` … `scroll_lock_key`
+  parameters.
+- Docs for drag and drop (`drag: drag-drop` or `clone`; `dragdrop` bubbles with the target and `drag_element`),
+  double clicks (RmlUi's clock), keys, and the parts a tooltip is built from (`pointer-events: none`).
+
+### Fixed
+
+- A `<select>`'s children are its options. `childCount` and `child` read them, since RmlUi keeps options out of the
+  DOM; before, both answered 0 once RmlUi had moved the options into the drop-down.
+- `setInnerRml` and `setText` on a `<select>` replace its options. Before, RmlUi's `SetInnerRML` kept the old ones and
+  the old value.
+- A rebuild by `setInnerRml`, `setText`, `appendRml`, `removeChildren` or `remove` settles the select's value at once
+  (the option marked `selected`, else the first), as RmlUi would at the next update, and queues no `change`.
+
+### Tests
+
+- 162 checks. New: append and removal (with handles, listeners, a binding and the scroll offset kept), a select's
+  options, the clipboard, key and click modifiers, focus and blur, double clicks against the clock, a drag and drop
+  by injected pointer input (and a dragged element removed before the poll), and a tooltip's parts.
+
 ## [0.1.1] — 2026-10-14
 
 Additions and fixes only: no existing signature changes.
