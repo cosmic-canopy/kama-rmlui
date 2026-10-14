@@ -17,7 +17,7 @@
     ".": { "visibility": "public" }
   },
   "dependencies": {
-    "@kama/freetype": { "path": "../kama-freetype" }
+    "@kama/freetype": { "version": "^0.1.0" }
   },
   "cincludes": [
     "csrc",

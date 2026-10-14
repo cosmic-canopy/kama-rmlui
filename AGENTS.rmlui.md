@@ -12,9 +12,9 @@ are the working rules.
 - **RmlUi's build definitions never go in `cflags`.** They live in the generated `csrc/rmlui/kama_rmlui_build.h`, which
   only the wrappers include. A dependency's `cflags` reach every translation unit of the consumer. Every `csources`
   entry is gated `!ARCH_WASM32`.
-- **FreeType is `@kama/freetype`** (`../kama-freetype`, by path until it is on the registry). `tests/kama.json`
-  restates that path, because kama requires every consumer to list its dependencies' path dependencies. Change
-  FreeType's modules or options there, not here.
+- **FreeType is `@kama/freetype`** from the registry (`^0.1.0`; its repo is cosmic-canopy/kama-freetype). To work
+  against a FreeType checkout, override it in a gitignored `kama.local.json` (`"overrides": {"@kama/freetype":
+  {"path": "../kama-freetype"}}`); never commit a path. Change FreeType's modules or options there, not here.
 - **Run `tools/test.sh`** (`KAMA=/path/to/kama` if `kama` is not on the PATH). It builds `tests/` in debug, in release,
   and in debug under AddressSanitizer, from the package root. The ASan leg wraps `cc`/`c++`, so RmlUi, FreeType and
   the shim are all instrumented. A failing case prints its name. There is no wasm leg: the package is

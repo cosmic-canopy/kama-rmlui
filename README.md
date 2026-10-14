@@ -17,21 +17,18 @@ also headless.
 ## Setting it up
 
 RmlUi is vendored (`third_party/rmlui`) and compiled by kama into your program. FreeType, its font engine, comes from
-[`@kama/freetype`](../kama-freetype), which is also vendored. There is nothing to fetch, nothing to build with CMake,
+[`@kama/freetype`](https://github.com/cosmic-canopy/kama-freetype) on the registry, which is also vendored. There is nothing to fetch, nothing to build with CMake,
 and no `-L` path to set.
 
 ```json
 "dependencies": { "@kama/rmlui": { "version": "^0.1.0" } }
 ```
 
-Until the packages are on the registry, depend on the checkouts by path. kama requires a consumer to restate a
-dependency's own path dependencies, so list FreeType too:
+To build against a checkout instead (working on the package itself), override it in your gitignored
+`kama.local.json` rather than editing `kama.json`:
 
 ```json
-"dependencies": {
-  "@kama/rmlui":    { "path": "../kama-rmlui" },
-  "@kama/freetype": { "path": "../kama-freetype" }
-}
+{ "overrides": { "@kama/rmlui": { "path": "../kama-rmlui" } } }
 ```
 
 What that costs and buys:

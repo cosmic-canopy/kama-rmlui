@@ -3,8 +3,8 @@
 # AddressSanitizer with leak checking (Linux; ASAN=0 skips it). `kama` is taken from $KAMA or the PATH. Runs from the
 # package root, which the tests' font and fixture paths are relative to.
 #
-# RmlUi is vendored (third_party/rmlui) and compiled by kama, and FreeType comes from @kama/freetype beside this
-# repository (../kama-freetype). There is nothing to fetch or build first. There is no wasm leg: the package is
+# RmlUi is vendored (third_party/rmlui) and compiled by kama, and FreeType comes from @kama/freetype on the registry
+# (kama pkg install fetches it). There is nothing else to fetch or build first. There is no wasm leg: the package is
 # `!ARCH_WASM32` throughout. @kama/ui's tools/test-web.sh shows the gates hold in a wasm build that depends on it.
 #
 # AddressSanitizer is a compiler wrapper rather than a manifest entry: kama.json has no per-build-type `cflags`, and a
